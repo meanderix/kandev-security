@@ -1,167 +1,226 @@
-// Package main tests. Exercises templatePlugin's Plugin methods (OnEvent and
-// HandleWebhook) via direct calls against a fakeHost — no
-// go-plugin subprocess needed. This is the fast, hermetic way to test a
-// kandev plugin's backend half; copy the fakeHost pattern for your own tests.
 package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
-	"errors"
-	"sync"
+	"path/filepath"
 	"testing"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
-	"github.com/stretchr/testify/require"
+	"kandev-security/internal/reports"
 )
 
-// fakeHost is an in-memory pluginsdk.Host test double that actually stores
-// state (unlike a call-recording spy), so tests can assert the
-// get-then-increment-then-set round trip. SetState round-trips values through
-// JSON, mirroring the real Host's protobuf Struct conversion: numbers always
-// come back as float64, never the original Go numeric type — a fake that just
-// stored the raw Go value would hide bugs like reading a JSON number as int.
-// UnimplementedHostData satisfies the Host data API accessors this plugin
-// doesn't use.
-type fakeHost struct {
-	pluginsdk.UnimplementedHostData
-	mu     sync.Mutex
-	state  map[string]map[string]any
-	config map[string]any
-}
-
-func newFakeHost() *fakeHost {
-	return &fakeHost{state: make(map[string]map[string]any)}
-}
-
-func stateKey(scope, scopeID, key string) string {
-	return scope + "/" + scopeID + "/" + key
-}
-
-func (h *fakeHost) GetState(_ context.Context, scope, scopeID, key string) (map[string]any, bool, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	v, ok := h.state[stateKey(scope, scopeID, key)]
-	return v, ok, nil
-}
-
-func (h *fakeHost) SetState(_ context.Context, scope, scopeID, key string, value map[string]any) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.state[stateKey(scope, scopeID, key)] = jsonRoundTrip(value)
-	return nil
-}
-
-// jsonRoundTrip marshals v to JSON and back into map[string]any, so numeric
-// values normalize to float64 exactly like structpb.Struct.AsMap() does on
-// the real wire.
-func jsonRoundTrip(v map[string]any) map[string]any {
-	data, err := json.Marshal(v)
+func testPlugin(t *testing.T) *securityPlugin {
+	t.Helper()
+	s, err := reports.Open(filepath.Join(t.TempDir(), "security.db"))
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
-	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil {
-		panic(err)
+	t.Cleanup(func() { s.Close() })
+	return &securityPlugin{store: s}
+}
+
+func TestAdvisoryWorkspaceActions(t *testing.T) {
+	p := testPlugin(t)
+	raw := []byte(`{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Scanner"}},"results":[{"ruleId":"CVE-2026-12345","message":{"text":"Package A"}},{"ruleId":"CVE-2026-12345","message":{"text":"Package B"}},{"ruleId":"10027","message":{"text":"Ordinary rule"}}]}]}`)
+	if _, _, err := p.store.Import(context.Background(), "ws", "actor", "scan.sarif", raw); err != nil {
+		t.Fatal(err)
 	}
-	return out
-}
-
-func (h *fakeHost) DeleteState(context.Context, string, string, string) error { return nil }
-
-func (h *fakeHost) ListState(context.Context, string, string) ([]pluginsdk.StateEntry, error) {
-	return nil, nil
-}
-
-// GetConfig returns the operator-saved settings the real Host reads from
-// kandev's plugin config store.
-func (h *fakeHost) GetConfig(context.Context) (map[string]any, error) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.config == nil {
-		return map[string]any{}, nil
+	status, list := invoke(t, p, "advisories.list", "ws", map[string]any{})
+	if status != 200 || list["total"] != float64(1) || list["finding_count"] != float64(2) {
+		t.Fatal(status, list)
 	}
-	return h.config, nil
+	key := list["items"].([]any)[0].(map[string]any)["key"]
+	status, members := invoke(t, p, "advisories.findings", "ws", map[string]any{"id": key})
+	if status != 200 || members["total"] != float64(2) {
+		t.Fatal(status, members)
+	}
+	if status, _ = invoke(t, p, "advisories.findings", "other", map[string]any{"id": key}); status != 404 {
+		t.Fatal("foreign advisory", status)
+	}
+	if status, _ = invoke(t, p, "advisories.list", "ws", map[string]any{"workspace_id": "other"}); status != 400 {
+		t.Fatal("authority override", status)
+	}
+	if status, _ = invoke(t, p, "advisories.findings", "ws", map[string]any{"id": key, "severity": "high"}); status != 400 {
+		t.Fatal("ambiguous severity filter", status)
+	}
+}
+func invoke(t *testing.T, p *securityPlugin, key, ws string, body any) (int, map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	response, err := p.HandleAction(context.Background(), &pluginsdk.PluginActionRequest{ActionKey: key, Context: pluginsdk.VerifiedActionContext{WorkspaceID: ws, ActorID: "actor"}, Body: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(response.Body, &value); err != nil {
+		t.Fatal(err)
+	}
+	return response.Status, value
+}
+func TestWorkspaceActions(t *testing.T) {
+	p := testPlugin(t)
+	if status, _ := invoke(t, p, "imports.start", "", map[string]any{"filename": "x", "size": 1}); status != 403 {
+		t.Fatal(status)
+	}
+	// A body cannot override the authenticated workspace.
+	if status, _ := invoke(t, p, "reports.list", "ws", map[string]any{"workspace_id": "other"}); status != 400 {
+		t.Fatal(status)
+	}
+	raw := []byte(`{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Scanner"}},"results":[]}]}`)
+	status, value := invoke(t, p, "imports.start", "ws", map[string]any{"filename": "scan.sarif", "size": len(raw)})
+	if status != 200 {
+		t.Fatal(value)
+	}
+	id := value["id"].(string)
+	if status, _ := invoke(t, p, "imports.append", "other", map[string]any{"id": id, "data": base64.StdEncoding.EncodeToString(raw)}); status != 404 {
+		t.Fatal(status)
+	}
+	if status, _ := invoke(t, p, "imports.append", "ws", map[string]any{"id": id, "data": "invalid base64"}); status != 400 {
+		t.Fatal(status)
+	}
+	if status, value = invoke(t, p, "imports.append", "ws", map[string]any{"id": id, "data": base64.StdEncoding.EncodeToString(raw)}); status != 200 {
+		t.Fatal(value)
+	}
+	status, value = invoke(t, p, "imports.complete", "ws", map[string]any{"id": id})
+	if status != 200 {
+		t.Fatal(value)
+	}
+	report := value["report"].(map[string]any)
+	if report["workspace_id"] != "ws" || report["actor_id"] != "actor" {
+		t.Fatal(report)
+	}
+	for _, key := range []string{"reports.get", "reports.source", "reports.delete"} {
+		if status, _ := invoke(t, p, key, "other", map[string]any{"id": report["id"]}); status != 404 {
+			t.Fatalf("%s: %d", key, status)
+		}
+	}
+	if status, _ := invoke(t, p, "reports.get", "ws", map[string]any{"id": report["id"]}); status != 200 {
+		t.Fatal(status)
+	}
+	if status, _ := invoke(t, p, "reports.delete", "ws", map[string]any{"id": report["id"]}); status != 200 {
+		t.Fatal(status)
+	}
+}
+func TestActionValidation(t *testing.T) {
+	p := testPlugin(t)
+	for _, raw := range []string{`{`, `{} {}`, `{"offset":-1}`, `{"search":"x","level":"bogus"}`} {
+		key := "reports.list"
+		if raw == `{"search":"x","level":"bogus"}` {
+			key = "reports.get"
+		}
+		resp, err := p.HandleAction(context.Background(), &pluginsdk.PluginActionRequest{ActionKey: key, Context: pluginsdk.VerifiedActionContext{WorkspaceID: "ws"}, Body: []byte(raw)})
+		if err != nil || resp.Status != 400 {
+			t.Fatalf("%s: %+v %v", raw, resp, err)
+		}
+	}
+	if status, _ := invoke(t, p, "unknown", "ws", nil); status != 404 {
+		t.Fatal(status)
+	}
+	resp, err := p.HandleAction(context.Background(), nil)
+	if err != nil || resp.Status != 403 {
+		t.Fatal(resp, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := p.HandleAction(ctx, &pluginsdk.PluginActionRequest{Context: pluginsdk.VerifiedActionContext{WorkspaceID: "ws"}}); err == nil {
+		t.Fatal("ignored cancellation")
+	}
 }
 
-func (h *fakeHost) RevealSecret(context.Context, string) (string, error) { return "", nil }
-
-func (h *fakeHost) GetSecret(context.Context, string) (string, bool, error) {
-	return "", false, nil
-}
-func (h *fakeHost) SetSecret(context.Context, string, string) error { return nil }
-func (h *fakeHost) DeleteSecret(context.Context, string) error      { return nil }
-
-func (h *fakeHost) EmitEvent(context.Context, string, map[string]any) error { return nil }
-
-var _ pluginsdk.Host = (*fakeHost)(nil)
-
-func TestOnEvent_NoHost_ReturnsNilWithoutPanicking(t *testing.T) {
-	p := &templatePlugin{}
-	err := p.OnEvent(context.Background(), &pluginsdk.Event{EventID: "e1", EventType: "task.created"})
-	require.NoError(t, err)
-}
-
-func TestOnEvent_IncrementsEventCountViaHostState(t *testing.T) {
-	p := &templatePlugin{}
-	host := newFakeHost()
-	p.SetHost(host)
-
-	require.NoError(t, p.OnEvent(context.Background(), &pluginsdk.Event{EventID: "e1", EventType: "task.created"}))
-	value, found, err := host.GetState(context.Background(), "instance", "", eventCountStateKey)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.InEpsilon(t, float64(1), value["count"], 0)
-
-	require.NoError(t, p.OnEvent(context.Background(), &pluginsdk.Event{EventID: "e2", EventType: "task.created"}))
-	value, found, err = host.GetState(context.Background(), "instance", "", eventCountStateKey)
-	require.NoError(t, err)
-	require.True(t, found)
-	require.InEpsilon(t, float64(2), value["count"], 0)
+func TestAggregateActionsAreWorkspaceScoped(t *testing.T) {
+	p := testPlugin(t)
+	raw := []byte(`{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"PrivateTool"}},"results":[{"ruleId":"RULE","level":"error","message":{"text":"Private finding"}}]}]}`)
+	if _, _, err := p.store.Import(context.Background(), "private", "actor", "private.sarif", raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"findings.list", "findings.facets"} {
+		body := map[string]any{}
+		if key == "findings.facets" {
+			body["facet"] = "tool"
+		}
+		status, value := invoke(t, p, key, "other", body)
+		if status != 200 || len(value["items"].([]any)) != 0 {
+			t.Fatalf("%s leaked findings: %+v", key, value)
+		}
+		if status, _ := invoke(t, p, key, "", body); status != 403 {
+			t.Fatal("missing workspace accepted")
+		}
+	}
+	if status, _ := invoke(t, p, "findings.list", "private", map[string]any{"sort": "DROP TABLE"}); status != 400 {
+		t.Fatal("unknown sort accepted")
+	}
+	status, value := invoke(t, p, "findings.list", "private", map[string]any{"tool": "PrivateTool", "severity": "high", "sort": "newest"})
+	if status != 200 || value["total"] != float64(1) {
+		t.Fatal(value)
+	}
 }
 
-// errHost fails every SetState call, to prove OnEvent surfaces a Host write
-// failure rather than silently swallowing it.
-type errHost struct {
-	fakeHost
+func TestFindingDetailActionAuthority(t *testing.T) {
+	p := testPlugin(t)
+	raw := []byte(`{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"Scanner"}},"results":[{"message":{"text":"A"}},{"message":{"text":"B"}}]}]}`)
+	r, _, err := p.store.Import(context.Background(), "ws", "actor", "scan.sarif", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		ws     string
+		body   map[string]any
+		status int
+	}{
+		{"ws", map[string]any{"id": r.ID}, 400}, {"ws", map[string]any{"id": r.ID, "ordinal": -1}, 400},
+		{"ws", map[string]any{"id": r.ID, "ordinal": 2}, 404}, {"other", map[string]any{"id": r.ID, "ordinal": 1}, 404},
+		{"", map[string]any{"id": r.ID, "ordinal": 1}, 403}, {"ws", map[string]any{"id": r.ID, "ordinal": 1}, 200},
+	} {
+		status, value := invoke(t, p, "findings.get", tc.ws, tc.body)
+		if status != tc.status {
+			t.Fatalf("%+v: %d %+v", tc, status, value)
+		}
+		if status == 200 && value["finding"].(map[string]any)["message"] != "B" {
+			t.Fatal(value)
+		}
+	}
 }
 
-func (h *errHost) SetState(context.Context, string, string, string, map[string]any) error {
-	return errors.New("boom")
-}
-
-func TestOnEvent_PropagatesHostSetStateError(t *testing.T) {
-	p := &templatePlugin{}
-	p.SetHost(&errHost{fakeHost: *newFakeHost()})
-
-	err := p.OnEvent(context.Background(), &pluginsdk.Event{EventID: "e1", EventType: "task.created"})
-	require.Error(t, err)
-}
-
-func TestHandleWebhook_DefaultGreetingWithoutHost(t *testing.T) {
-	p := &templatePlugin{}
-
-	resp, err := p.HandleWebhook(context.Background(), &pluginsdk.WebhookRequest{
-		WebhookKey: "ping",
-		Method:     "POST",
-		Body:       []byte(`{"ping":true}`),
-	})
-	require.NoError(t, err)
-	require.Equal(t, int32(200), resp.Status)
-	require.Equal(t, "Hello, webhook!", string(resp.Body))
-}
-
-func TestHandleWebhook_UsesOperatorConfig(t *testing.T) {
-	p := &templatePlugin{}
-	host := newFakeHost()
-	host.config = map[string]any{"greeting": "Howdy", "api_token": "secret"}
-	p.SetHost(host)
-
-	resp, err := p.HandleWebhook(context.Background(), &pluginsdk.WebhookRequest{
-		WebhookKey: "ping",
-		Method:     "POST",
-	})
-	require.NoError(t, err)
-	require.Equal(t, int32(200), resp.Status)
-	require.Equal(t, "Howdy, webhook!", string(resp.Body))
+func TestIssueActionsAndReadOnlyAgentHistory(t *testing.T) {
+	p := testPlugin(t)
+	reportID, _ := auditFixture(t, p, "ws")
+	status, list := invoke(t, p, "issues.list", "ws", map[string]any{})
+	if status != 200 || list["total"] != float64(2) {
+		t.Fatal(status, list)
+	}
+	issueID := list["items"].([]any)[0].(map[string]any)["issue_id"].(string)
+	for _, key := range []string{"issues.get", "issues.set_status"} {
+		status, _ = invoke(t, p, key, "foreign", map[string]any{"id": issueID, "status": "closed", "reason": "Reviewed"})
+		if status != 404 {
+			t.Fatal("workspace leak", key, status)
+		}
+	}
+	status, _ = invoke(t, p, "issues.set_status", "ws", map[string]any{"id": issueID, "status": "closed", "reason": "Reviewed", "actor": "spoof"})
+	if status != 400 {
+		t.Fatal("actor override accepted")
+	}
+	status, _ = invoke(t, p, "issues.set_status", "ws", map[string]any{"id": issueID, "status": "closed", "reason": "Reviewed"})
+	if status != 200 {
+		t.Fatal(status)
+	}
+	status, d := invoke(t, p, "issues.get", "ws", map[string]any{"id": issueID})
+	if status != 200 || d["issue"].(map[string]any)["status"] != "closed" || d["history"].([]any)[0].(map[string]any)["actor"] != "actor" {
+		t.Fatal(status, d)
+	}
+	read := toolData(t, p, "get_issue", map[string]any{"issue_id": issueID})
+	if read["total"] != float64(1) {
+		t.Fatal(read)
+	}
+	req := auditRequest("get_issue", map[string]any{"issue_id": issueID})
+	req.Context.WorkspaceID = "foreign"
+	result, err := p.InvokeAgentTool(context.Background(), req)
+	if err != nil || !result.IsError {
+		t.Fatal("native issue workspace leak", result, err)
+	}
+	native := toolData(t, p, "get_finding", map[string]any{"report_id": reportID, "ordinal": 0})
+	if native["finding"].(map[string]any)["issue_id"] != issueID {
+		t.Fatal("native identity absent", native)
+	}
 }

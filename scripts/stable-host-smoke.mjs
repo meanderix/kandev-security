@@ -1,12 +1,11 @@
-// Browser smoke for an installed template package on a disposable Kandev host.
-// Playwright comes from the sibling Kandev checkout; this template keeps its
-// default JavaScript toolchain free of a second browser-test dependency.
+// Browser smoke for an installed security package on a disposable Kandev host.
+// Uses the repository's Playwright dependency; install it with npm ci first.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir } from "node:fs/promises";
-import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
+import { chromium, devices } from "@playwright/test";
 
 const baseURL = process.env.KANDEV_URL ?? "http://127.0.0.1:18797";
 const taskPath = process.env.KANDEV_SMOKE_TASK_PATH;
@@ -14,10 +13,10 @@ const expectedVersion = process.env.KANDEV_EXPECTED_VERSION ?? "v0.97.0";
 const expectedReleaseCommit = "e43881c7555372897b57ec51c705f1e05da43c40";
 const releaseSource = process.env.KANDEV_RELEASE_SOURCE;
 const hostLogPath = process.env.KANDEV_SMOKE_HOST_LOG;
-const screenshotDir = process.env.KANDEV_SMOKE_SCREENSHOTS ?? "/tmp/kandev-plugin-smoke";
-const pluginID = "kandev-plugin-template";
-const actionSelector = "#template-chat-action";
-const actionName = process.env.KANDEV_SMOKE_ACTION_NAME ?? "Template — open page";
+const screenshotDir = process.env.KANDEV_SMOKE_SCREENSHOTS ?? "/tmp/kandev-security-smoke";
+const pluginID = "kandev-security";
+const actionSelector = "#security-chat-action";
+const actionName = process.env.KANDEV_SMOKE_ACTION_NAME ?? "Security: open page";
 
 if (!taskPath?.startsWith("/t/")) {
   throw new Error("Set KANDEV_SMOKE_TASK_PATH to a task route with a composer.");
@@ -37,12 +36,6 @@ assert.equal(releaseCommit, expectedReleaseCommit, "release source is the exact 
 execFileSync("git", ["-C", releaseRoot, "diff", "--quiet"]);
 execFileSync("git", ["-C", releaseRoot, "diff", "--cached", "--quiet"]);
 const releaseWebDist = resolve(releaseRoot, "apps/web/dist");
-
-const require = createRequire(import.meta.url);
-const kandevRoot = resolve(process.env.KANDEV_CHECKOUT ?? "../kandev");
-const hostWeb = resolve(kandevRoot, "apps/web");
-const testPackage = require.resolve("@playwright/test", { paths: [hostWeb] });
-const { chromium, devices } = require(require.resolve("playwright", { paths: [dirname(testPackage)] }));
 
 const healthResponse = await fetch(`${baseURL}/health`);
 assert.equal(healthResponse.status, 200, "host health endpoint responds");
@@ -208,7 +201,7 @@ async function assertUnscopedQuickChatAction(targetPage, dialog, presentation) {
   assert.equal(await action.isDisabled(), false, "navigation action stays enabled while send is disabled");
   assert.notEqual(await action.getAttribute("aria-disabled"), "true");
 
-  // The template action appends task context to its tooltip when the host
+  // The security action appends task context to its tooltip when the host
   // supplies a task id/title. An unscoped opening composer has no such suffix.
   if (presentation === "desktop") {
     await action.hover();
@@ -240,8 +233,8 @@ try {
   await action.focus();
   assert.equal(await action.evaluate((element) => document.activeElement === element), true);
   await action.press("Enter");
-  await page.waitForURL("**/template", { timeout: 15000 });
-  await page.getByText("buffer 0 of 5", { exact: true }).waitFor({ state: "visible" });
+  await page.waitForURL("**/security", { timeout: 15000 });
+  await page.getByRole("heading", { name: "Kandev Security", exact: true }).waitFor({ state: "visible" });
   results.push({ case: "keyboard focus and Enter navigation", passed: true });
 
   await page.goto(`${baseURL}/settings/plugins`, { waitUntil: "domcontentloaded" });
@@ -275,8 +268,8 @@ try {
     true,
   );
   await quickChat.locator(actionSelector).press("Enter");
-  await page.waitForURL("**/template", { timeout: 15000 });
-  await page.getByText("buffer 0 of 5", { exact: true }).waitFor({ state: "visible" });
+  await page.waitForURL("**/security", { timeout: 15000 });
+  await page.getByRole("heading", { name: "Kandev Security", exact: true }).waitFor({ state: "visible" });
   results.push({
     case: "desktop Quick Chat opening composer, no task/session scope, disabled send, keyboard navigation",
     bounds: quickChatDesktopBounds,
@@ -316,8 +309,8 @@ try {
   assert.ok(mobileTaskBounds.x >= 0 && mobileTaskBounds.x + mobileTaskBounds.width <= phone.width + 1);
   await mobile.screenshot({ path: resolve(screenshotDir, "pixel-5-action.png"), fullPage: true });
   await mobileTaskAction.tap();
-  await mobile.waitForURL("**/template", { timeout: 15000 });
-  await mobile.getByText("buffer 0 of 5", { exact: true }).waitFor({ state: "visible" });
+  await mobile.waitForURL("**/security", { timeout: 15000 });
+  await mobile.getByRole("heading", { name: "Kandev Security", exact: true }).waitFor({ state: "visible" });
   assert.equal(
     await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,
@@ -348,8 +341,8 @@ try {
   assert.ok(mobileBounds.x >= 0 && mobileBounds.x + mobileBounds.width <= quickChatPhone.width + 1);
   await mobile.screenshot({ path: resolve(screenshotDir, "quick-chat-opening-pixel-5.png"), fullPage: true });
   await mobileAction.tap();
-  await mobile.waitForURL("**/template", { timeout: 15000 });
-  await mobile.getByText("buffer 0 of 5", { exact: true }).waitFor({ state: "visible" });
+  await mobile.waitForURL("**/security", { timeout: 15000 });
+  await mobile.getByRole("heading", { name: "Kandev Security", exact: true }).waitFor({ state: "visible" });
   assert.equal(
     await mobile.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
     true,

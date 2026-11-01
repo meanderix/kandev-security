@@ -1,107 +1,170 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"io"
 	"log"
 
 	"github.com/kandev/kandev/pkg/pluginsdk"
+	"kandev-security/internal/reports"
 )
 
-// eventCountStateKey is the Host state key this template uses to demonstrate
-// the GetState/SetState round trip: every task.created delivery increments a
-// persistent counter kept in kandev's state store, scoped to this plugin
-// instance. Delete this (and OnEvent) if your plugin doesn't handle events.
-const eventCountStateKey = "event_count"
-
-// templatePlugin implements pluginsdk.Plugin (via UnimplementedPlugin). It is
-// the one type you customize on the backend side: embed UnimplementedPlugin
-// for no-op defaults, then override only the RPCs you need
-// (OnEvent / HandleWebhook). Rename it to match your plugin.
-type templatePlugin struct {
+type securityPlugin struct {
 	pluginsdk.UnimplementedPlugin
+	store *reports.Store
 }
 
-var _ pluginsdk.Plugin = (*templatePlugin)(nil)
+var _ pluginsdk.ActionHandler = (*securityPlugin)(nil)
 
-// OnEvent is called for every event type declared in manifest.yaml's
-// capabilities.events. Here it logs the delivery and, when a Host has been
-// injected, increments a persistent counter through Host state. Returning an
-// error asks kandev to retry the delivery; return nil to acknowledge.
-func (p *templatePlugin) OnEvent(ctx context.Context, e *pluginsdk.Event) error {
-	log.Printf("event delivered: type=%s id=%s", e.EventType, e.EventID)
-
-	host := p.Host()
-	if host == nil {
-		// Host not injected yet (e.g. the broker dial is still in
-		// progress) — nothing more to do for this delivery.
-		return nil
+// Workspace authority comes exclusively from Kandev's verified action context.
+func (p *securityPlugin) HandleAction(ctx context.Context, req *pluginsdk.PluginActionRequest) (*pluginsdk.PluginActionResponse, error) {
+	if req == nil || req.Context.WorkspaceID == "" {
+		return actionJSON(403, map[string]string{"error": "A verified workspace is required."})
 	}
-
-	count, err := incrementEventCount(ctx, host)
-	if err != nil {
-		return fmt.Errorf("kandev-plugin-template: updating event count in Host state: %w", err)
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	log.Printf("events counted via Host state: %d", count)
-	return nil
-}
-
-// incrementEventCount reads the current count from Host state (0 if unset),
-// writes back count+1, and returns the new count. Note numbers come back from
-// Host state as float64 (the values round-trip through a protobuf Struct on
-// the wire), so read them as float64 before converting.
-func incrementEventCount(ctx context.Context, host pluginsdk.Host) (int, error) {
-	value, found, err := host.GetState(ctx, "instance", "", eventCountStateKey)
-	if err != nil {
-		return 0, fmt.Errorf("reading %s: %w", eventCountStateKey, err)
+	if p.store == nil {
+		return actionJSON(503, map[string]string{"error": "Report storage is unavailable."})
 	}
-
-	count := 0
-	if found {
-		if c, ok := value["count"].(float64); ok {
-			count = int(c)
+	if isTaskAction(req.ActionKey) {
+		return p.handleTaskAction(ctx, req)
+	}
+	if isRetentionAction(req.ActionKey) {
+		return p.handleRetentionAction(ctx, req)
+	}
+	if req.ActionKey == "reports.archive" {
+		return p.handleArchiveAction(ctx, req)
+	}
+	var input struct {
+		HistoryOffset int    `json:"history_offset"`
+		Status        string `json:"status"`
+		Reason        string `json:"reason"`
+		ID            string `json:"id"`
+		Ordinal       *int   `json:"ordinal"`
+		Name          string `json:"name"`
+		Filename      string `json:"filename"`
+		Size          int    `json:"size"`
+		Offset        int    `json:"offset"`
+		Data          string `json:"data"`
+		Level         string `json:"level"`
+		Search        string `json:"search"`
+		Language      string `json:"language"`
+		Tool          string `json:"tool"`
+		Rule          string `json:"rule"`
+		Severity      string `json:"severity"`
+		Sort          string `json:"sort"`
+		Facet         string `json:"facet"`
+	}
+	if len(req.Body) > 1<<20 {
+		return actionFailure(reports.ErrInvalid)
+	}
+	raw := req.Body
+	if len(raw) == 0 {
+		raw = []byte("{}")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return actionFailure(reports.ErrInvalid)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return actionFailure(reports.ErrInvalid)
+	}
+	workspace := req.Context.WorkspaceID
+	var result any
+	var err error
+	switch req.ActionKey {
+	case "advisories.list":
+		result, err = p.store.Advisories(ctx, workspace, reports.AggregateQuery{Language: input.Language, Tool: input.Tool, Rule: input.Rule, Severity: input.Severity, Search: input.Search, Sort: input.Sort, Offset: input.Offset})
+	case "advisories.findings":
+		result, err = p.store.AdvisoryFindings(ctx, workspace, input.ID, reports.AggregateQuery{Language: input.Language, Tool: input.Tool, Rule: input.Rule, Severity: input.Severity, Search: input.Search, Sort: input.Sort, Offset: input.Offset})
+	case "tokens.create":
+		result, err = p.store.CreateUploadToken(ctx, workspace, req.Context.ActorID, input.Name)
+	case "tokens.list":
+		result, err = p.store.ListUploadTokens(ctx, workspace, input.Offset)
+	case "tokens.revoke":
+		err = p.store.RevokeUploadToken(ctx, workspace, req.Context.ActorID, input.ID)
+		result = map[string]bool{"revoked": true}
+	case "imports.start":
+		result, err = p.store.StartUpload(ctx, workspace, req.Context.ActorID, input.Filename, input.Size)
+	case "imports.append":
+		var chunk []byte
+		chunk, err = base64.StdEncoding.DecodeString(input.Data)
+		if err != nil {
+			err = reports.ErrInvalid
+			break
 		}
+		var offset int
+		offset, err = p.store.AppendUpload(ctx, workspace, input.ID, input.Offset, chunk)
+		result = map[string]int{"offset": offset}
+	case "imports.complete":
+		result, err = p.store.CompleteUpload(ctx, workspace, input.ID)
+	case "imports.cancel":
+		err = p.store.CancelUpload(ctx, workspace, input.ID)
+		result = map[string]bool{"cancelled": true}
+	case "issues.list":
+		result, err = p.store.Issues(ctx, workspace, reports.IssueQuery{AggregateQuery: reports.AggregateQuery{Language: input.Language, Tool: input.Tool, Rule: input.Rule, Severity: input.Severity, Search: input.Search, Sort: input.Sort, Offset: input.Offset}, Status: input.Status})
+	case "issues.get":
+		result, err = p.store.Issue(ctx, workspace, input.ID, input.Offset, input.HistoryOffset)
+	case "issues.set_status":
+		err = p.store.SetIssueStatus(ctx, workspace, req.Context.ActorID, input.ID, input.Status, input.Reason)
+		result = map[string]bool{"updated": true}
+	case "findings.get":
+		if input.Ordinal == nil {
+			err = reports.ErrInvalid
+			break
+		}
+		result, err = p.store.Finding(ctx, workspace, input.ID, *input.Ordinal)
+	case "findings.list":
+		result, err = p.store.AggregateWithStatus(ctx, workspace, reports.AggregateQuery{Language: input.Language, Tool: input.Tool, Rule: input.Rule, Severity: input.Severity, Search: input.Search, Sort: input.Sort, Offset: input.Offset}, input.Status)
+	case "findings.facets":
+		result, err = p.store.Facets(ctx, workspace, input.Facet, input.Search, input.Offset)
+	case "reports.list":
+		result, err = p.store.QueryReports(ctx, workspace, reports.ReportQuery{Offset: input.Offset, Status: input.Status, Tool: input.Tool, Search: input.Search})
+	case "reports.tools":
+		result, err = p.store.ReportTools(ctx, workspace, input.Search, input.Offset)
+	case "reports.get":
+		result, err = p.store.Detail(ctx, workspace, input.ID, reports.FindingQuery{Offset: input.Offset, Level: input.Level, Search: input.Search})
+	case "reports.source":
+		result, err = p.store.Source(ctx, workspace, input.ID, input.Offset)
+	case "reports.delete":
+		err = p.store.Delete(ctx, workspace, input.ID)
+		result = map[string]bool{"deleted": true}
+	default:
+		return actionJSON(404, map[string]string{"error": "Unknown report action."})
 	}
-	count++
-
-	if err := host.SetState(ctx, "instance", "", eventCountStateKey, map[string]any{"count": count}); err != nil {
-		return 0, fmt.Errorf("writing %s: %w", eventCountStateKey, err)
-	}
-	return count, nil
-}
-
-// HandleWebhook implements the webhooks declared in manifest.yaml. kandev
-// proxies POST /api/plugins/<id>/webhooks/<key> here; dispatch on
-// req.WebhookKey and return the status/body kandev should send back. This one
-// answers with a greeting built from the operator-configured settings, to
-// show a config read end to end.
-func (p *templatePlugin) HandleWebhook(ctx context.Context, req *pluginsdk.WebhookRequest) (*pluginsdk.WebhookResponse, error) {
-	log.Printf("webhook received: key=%s method=%s body=%s", req.WebhookKey, req.Method, string(req.Body))
-	body := fmt.Sprintf("%s, webhook!", p.greeting(ctx))
-	return &pluginsdk.WebhookResponse{Status: 200, Body: []byte(body)}, nil
-}
-
-// greeting reads this plugin's operator-editable settings through the Host
-// GetConfig RPC — the values saved on the plugin's settings page (the
-// manifest's config_schema). kandev restarts the plugin process whenever the
-// operator saves, so reading on demand always observes the current values.
-// Config is best-effort here: with no Host injected yet, or on an RPC error,
-// the greeting falls back to "Hello". A secret field like api_token arrives
-// in cleartext through this same call — the only surface where its real value
-// is visible.
-func (p *templatePlugin) greeting(ctx context.Context) string {
-	const fallback = "Hello"
-	host := p.Host()
-	if host == nil {
-		return fallback
-	}
-	config, err := host.GetConfig(ctx)
 	if err != nil {
-		log.Printf("reading plugin config: %v", err)
-		return fallback
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+		return actionFailure(err)
 	}
-	if greeting, _ := config["greeting"].(string); greeting != "" {
-		return greeting
+	return actionJSON(200, result)
+}
+func actionJSON(status int, value any) (*pluginsdk.PluginActionResponse, error) {
+	body, err := json.Marshal(value)
+	return &pluginsdk.PluginActionResponse{Status: status, Body: body, Headers: map[string]string{"Cache-Control": "no-store"}}, err
+}
+func actionFailure(err error) (*pluginsdk.PluginActionResponse, error) {
+	status := 500
+	message := "Report storage failed. Please try again."
+	switch {
+	case errors.Is(err, reports.ErrInvalid):
+		status = 400
+		message = err.Error()
+	case errors.Is(err, reports.ErrNotFound):
+		status = 404
+		message = "Report, finding, or import not found in this workspace."
+	case errors.Is(err, reports.ErrConflict):
+		status = 409
+		message = err.Error()
+	default:
+		log.Printf("security storage error: %v", err)
 	}
-	return fallback
+	return actionJSON(status, map[string]string{"error": message})
 }

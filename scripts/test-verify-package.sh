@@ -106,7 +106,7 @@ sed '/  ui\/bundle.js$/d' "$test_dir/incomplete-checksums/checksums.txt" > "$tes
 mv "$test_dir/incomplete-checksums/checksums.next" "$test_dir/incomplete-checksums/checksums.txt"
 expect_failure 'an omitted checksum entry' "$test_dir/incomplete-checksums"
 
-for forbidden in recipes/source-control/README.md package.json package-lock.json tsconfig.recipes.json scripts/verify-package.sh; do
+for forbidden in tests/reports-model.test.js package.json package-lock.json playwright.config.js scripts/verify-package.sh; do
 	copy_fixture "forbidden-${forbidden##*/}"
 	fixture=$test_dir/forbidden-${forbidden##*/}
 	mkdir -p "$fixture/$(dirname "$forbidden")"

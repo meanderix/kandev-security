@@ -1,354 +1,369 @@
-# kandev-plugin-template
+# Kandev Security
 
-A starter template for building a [kandev](https://github.com/kdlbs/kandev)
-**native-UI plugin** — its own git repo, packaged into a versioned tarball and
-installed against a running kandev instance. Click **“Use this template”** on
-GitHub (or copy this repo) to bootstrap your own plugin.
+A native [Kandev](https://github.com/kdlbs/kandev) plugin for workspace-owned
+security reports. Import SARIF from scanners, let AI agents submit findings,
+review recurring issues across reports, and start investigation or remediation
+tasks with the source evidence attached.
 
-It is a small, complete example of the core plugin surfaces, wired together so
-you can delete what you do not need rather than assemble it from scratch:
+Requires **Kandev 0.97.0 or later**.
 
-- **Native nav item + route** — `ui/bundle.js` adds a sidebar entry that opens
-  `/template`, a page rendered natively inside the kandev SPA (not an iframe)
-  using the host's own React instance.
-- **A page built from host components** — one `Card` containing a `Popover`
-  (host-positioned, no `getBoundingClientRect` math), a `Progress` bar, a
-  `Table` that swaps to `Empty` when there's nothing to show, and `Kbd` for a
-  keyboard hint. Each part is independent: delete the ones you don't want.
-- **Toasts** — the page's Clear button calls `host.toast.success` and
-  `host.toast.error`. The host mounts the single `<Toaster/>`, so there is
-  nothing to render and it works from anywhere, modals included.
-- **Locale-aware timestamps** — `host.utils.formatRelativeTime` renders each
-  row's "seen" column through `Intl.RelativeTimeFormat`, and `host.utils.cn`
-  merges conditional classes the same way the host components do.
-- **Live theme** — `host.onThemeChange` keeps a readout in the popover current
-  when the user flips light/dark.
-- **Chat toolbar action** — one component registration uses `host.ui.Action`
-  when the host provides it and keeps the legacy button on older supported
-  hosts. The composer passes `{ sessionId, taskId, taskTitle }` as `slotProps`.
-- **Live WS-driven page** — a `registerWsHandler("task.created", ...)`
-  handler updates module state that the page re-renders from, live, with no
-  reload.
-- **Backend event handling with Host state** — `OnEvent` counts `task.created`
-  deliveries in a persistent counter via the `Host.GetState`/`SetState` round
-  trip, so restarts don't reset it.
-- **Backend webhook** — `HandleWebhook` logs the `ping` request and returns a
-  greeting from the operator settings. Its access is public and declared in
-  the manifest. See [Webhook access](#webhook-access) before you copy it.
-- **Operator settings (`config_schema`)** — a `greeting` string and a secret
-  `api_token`, rendered as a form at **Settings > Plugins > Template Plugin**.
-  The plugin reads `greeting`; `api_token` only demonstrates secret-field
-  handling and is not used by this example.
+## Getting started
 
-Source-control providers need several newer hooks that would swamp this default
-starter. The compile-tested [provider-neutral source-control recipe](recipes/source-control/README.md)
-shows repository search/paging/inspection/branches/create, task Link and unlink,
-review status and responsive Review UI, composer `#` references, cancellation,
-and unload fencing. It is opt-in and intentionally excluded from the generated
-package until you copy its declarations and adapters into your plugin.
+1. Build a plugin archive using the [development and packaging](#development)
+   instructions below, then install it through **Settings > Plugins**.
+2. Open **Security** in the sidebar and select a workspace.
+3. Choose **Import SARIF** from the page header menu and upload a report.
+4. Review **All findings**, open a finding for details, or use **Start task** to
+   prepare a Kandev task.
 
-## Make it yours
+**All findings** is the default view. The header menu also opens **Advisories**,
+**Reports**, **Import SARIF**, **Upload tokens**, and workspace settings. The UI
+supports desktop and phone layouts; the chat toolbar shortcut opens `/security`.
 
-The plugin **id** appears in four places that must stay in sync. Rename all of
-them from `kandev-plugin-template` to your own id (e.g. `kandev-plugin-acme`):
+For scripts and CI, use the raw-file upload webhook with a workspace upload
+token. It accepts up to **16 MiB** per request. When Kandev authentication is
+enabled, also supply a Kandev personal access token (PAT). See the
+[API guide](docs/api.md) for the curl command and token setup.
 
-1. `manifest.yaml` — `id`, plus `display_name` / `description` / `author`.
-2. `go.mod` — the `module` line.
-3. `Makefile` — `BIN` and `VERSION` to match the manifest. The package name
-   is derived from them.
-4. `ui/bundle.js` — the id passed to `window.registerKandevPlugin(...)`.
+The following flow shows how a scanner report becomes findings and a linked task:
 
-Then trim the scaffolding: drop the webhook / event / config blocks in
-`manifest.yaml` you don't use, delete the matching handlers in
-`server/plugin.go`, and keep only the `registry.register*` calls in
-`ui/bundle.js` your plugin actually contributes. Update `server/plugin_test.go`
-to cover what remains.
+```mermaid
+sequenceDiagram
+    participant Scanner as Scanner / CI
+    actor Reviewer
+    participant Kandev
+    participant Security as Security plugin
+    participant DB as Plugin SQLite
 
-If you are building a Git provider, opt into `recipes/source-control/` as one
-cohesive slice. Do not activate only its UI or only its manifest fragment:
-provider ownership, declared actions, backend optional interfaces, and frontend
-registrations are one contract.
+    Scanner->>Kandev: Upload SARIF via webhook
+    Kandev->>Security: Forward authenticated request
+    Security->>Security: Validate workspace upload token
+    Security->>DB: Store report, index findings, match issues
+    Security-->>Kandev: Import receipt
+    Kandev-->>Scanner: Import receipt
 
-The page in `ui/bundle.js` is deliberately built from independent parts —
-`AboutPopover`, the `Progress` block, `RecentTasksTable`, `EmptyState`, the
-Clear button — so you can delete any of them without unpicking the others.
-Adjust `min_kandev_version` in `manifest.yaml` to match whatever you keep.
-The Action recipes and repository conventions are in
-[docs/repository-baseline.md](docs/repository-baseline.md).
+    Reviewer->>Kandev: Open All findings
+    Kandev->>Security: Query workspace findings
+    Security->>DB: Read active reports and grouped issues
+    DB-->>Security: Findings and source references
+    Security-->>Kandev: Filtered, paginated results
+    Kandev-->>Reviewer: Display findings and evidence
 
-## Use the host's React — and the host's recharts
-
-`initialize(registry, host)` hands you `host.React` (and `host.jsx`, an alias
-for `host.React.createElement`). Use it. **Never import or bundle your own
-React**: a second React instance has its own hook dispatcher and context
-registry, so host components rendered inside your tree lose their providers,
-refs break, and `asChild` stops composing.
-
-The same hazard applies to **recharts**, which is why the host exposes
-`ChartContainer`, `ChartTooltip`, `ChartTooltipContent`, `ChartLegend`,
-`ChartLegendContent` and `ChartStyle` through `host.ui` rather than leaving you
-to install it: recharts resolves its tooltips and legends through its own React
-context and renders them into portals, so a bundled second copy splits exactly
-what the host copy is holding. It costs nothing to use the host's — recharts is
-already a dependency of the app. The same reasoning covers every
-Radix/portal/context-based package. Pure-React libraries (`@tabler/icons-react`,
-say) bundle fine, but this template ships hand-drawn inline SVG so it needs no
-bundler at all.
-
-`host.ui` is much broader than what this template uses — `Accordion*`,
-`Collapsible*`, `Select*`, `Tabs*`, `Sheet*`, `Pagination*`, `ScrollArea`,
-`Skeleton`, `Switch`, `Spinner`, `TooltipProvider`, plus kandev's own
-`PageTopbar`, `Combobox` and `TaskCreateDialog`. Check it before hand-rolling a
-component: the published plugins that hand-rolled progress bars and popovers
-did so only because this template used to stop at `Button`. The authoritative
-list is `PLUGIN_UI` in `apps/web/lib/plugins/host-api.ts`.
-
-## Webhook access
-
-The manifest uses `api_version: 1` and sets `access: "public"` explicitly.
-For API v1, an omitted access field keeps the legacy public default. Current
-API v2 uses an authenticated default. Keep the explicit value when you adapt
-the manifest. Read the [pinned authoring contract](https://github.com/kdlbs/kandev/blob/570600439036e81f8e9e1c63f15c4abce8a6c846/docs/public/plugins-authoring.md)
-for the current rules.
-
-```yaml
-webhooks:
-  - key: "ping"
-    method: "POST"
-    access: "public"
+    Reviewer->>Kandev: Choose Start task preset
+    Kandev->>Security: Prepare task context
+    Security-->>Kandev: Prompt with finding evidence
+    Kandev-->>Reviewer: Open native task dialog
+    Reviewer->>Kandev: Confirm task creation
+    Kandev->>Security: Associate created task with issue
+    Security->>DB: Persist verified task link
 ```
 
-The `ping` handler in this template does not authenticate the caller. It logs
-the request body and returns a greeting. Add sender verification before you
-use this pattern for a public service. The `api_token` setting is not a
-verification mechanism in this example.
+## Findings and review
 
-| `access:`       | Caller                                           | Body limit |
-| --------------- | ------------------------------------------------ | ---------- |
-| `public`        | Anonymous service. Check a provider signature or shared secret in your handler. | 4 MiB |
-| `authenticated` | Kandev session or PAT. Use it for your scripts and CI. | 16 MiB |
+**All findings** combines findings from the workspace's active reports.
+**Grouped issues** is enabled by default: reliable matches share a persistent
+issue ID, while every original result remains a report occurrence with its
+source report and content hash. Switch to **Report occurrences** to see results
+individually.
 
-If you want to call your plugin from your **own** frontend bundle, neither is
-right: declare an `actions:` entry instead. The host authenticates and
-authorizes those and passes a verified resource context to your backend, and
-`host.api.fetch` is documented as MUST NOT target a public webhook path.
+Issue matching uses scanner fingerprints and conservative dependency or code
+identities, scoped to the workspace, scanner, rule and source context. Recognized
+OSV dependency findings can match across installed versions. Findings without
+sufficient matching evidence remain separate. See [issue matching](docs/issues.md)
+for the rules and limitations.
 
-## Minimum host version
+Filter by **Language**, **Scanner tool**, **Rule**, **Severity**, and review
+**Status** (**All**, **Open**, or **Closed**), with text search across titles,
+messages, rule IDs and paths. Filters combine with AND and apply across all
+matching pages. Language, scanner and rule selectors are searchable. Click a
+severity count to filter; counts honor the other filters while leaving the other
+severities visible.
 
-`manifest.yaml` declares `min_kandev_version: "0.86.0"` — the first release
-carrying the `host.ui` primitives, `host.toast` and `host.utils` that
-`ui/bundle.js` calls. A release host compares it against its own version at
-install time and refuses an older one, so an operator gets a clear error
-instead of a plugin that loads and then breaks on a missing API.
+Sorting supports **Severity**, **Newest**, **Oldest**, **Recently updated**, and
+**Least recently updated**. Dates use first-import and last-import/reimport
+timestamps, rather than scanner detection times. Grouped issues preserve their
+first/last import history; report occurrences use their source report's dates.
 
-Raise it as you adopt newer host APIs; lower or drop it if you strip the bundle
-back to the pre-0.86 surface (`Button`, `Card*`, `Tooltip*`).
+Language comes from SARIF source-language metadata, then a file-extension
+heuristic. Severity uses a valid rule `security-severity` score when supplied:
 
-The source-control recipe uses post-v0.87.1 contracts and therefore cannot use
-this default `0.86.0` floor. Its README records the pinned source contract; set
-an activated provider plugin's minimum to the first release containing those
-hooks.
+| Score | Severity |
+| --- | --- |
+| 9 to 10 | Critical |
+| 7 to less than 9 | High |
+| 4 to less than 7 | Medium |
+| Greater than 0 to less than 4 | Low |
+| 0 | Informational |
 
-Two caveats worth knowing:
+Otherwise, SARIF `error` maps to High, `warning` to Medium, `note` to Low, and
+`none` to Informational. The original SARIF level remains available in report
+detail. Agent-authored findings use their declared severity.
 
-- The check only became load-bearing in 0.86.0. Earlier hosts parsed the field
-  and ignored it, so it can't protect you from a host old enough to have that
-  bug — a reason to declare it, not to skip it.
-- It is **release-only by design**. A host built from a git checkout reports a
-  git-describe version like `v0.87.1-27-g4705f1fd0`, which isn't a release
-  version, so the gate is skipped and the install succeeds whatever floor you
-  declare. A successful sideload onto your dev instance is not evidence that
-  your floor is correct — check it against the kandev history instead
-  (`git merge-base --is-ancestor <commit> <tag>`).
+Open a finding's drawer for its descriptions, scanner guidance, locations,
+snippets, HTTP evidence, suggested fixes, advisory links and source metadata.
+The [common finding model](docs/finding-model.md) makes this evidence available
+through the UI, API, MCP and task prompts. Descriptions, guidance and fixes
+render dedicated SARIF Markdown fields, including code, tables and safe links.
+Plain-text fields remain plain text; imported HTML is ignored and images do not
+load external resources. Result messages are displayed as plain text, including
+when their source is a SARIF Markdown message.
 
-## How a plugin runs (gRPC subprocess, not HTTP)
+The drawer also shows occurrence history, the matching method, import dates,
+linked tasks, and the current review reason. **Close issue** and **Reopen issue**
+require a reason and record the verified actor. Imports, report cleanup and task
+completion leave review status unchanged. A closed issue records a review
+decision; it does not establish verified remediation.
 
-kandev spawns the platform-matching binary from `runtime.executables` in
-`manifest.yaml` as a subprocess and talks to it over a private gRPC connection
-([hashicorp/go-plugin](https://github.com/hashicorp/go-plugin)) — there is no
-HTTP listen address, no shared secret, and no manual wiring: `pluginsdk.Serve`
-in `server/main.go` owns the entire transport. The base interface has two RPCs
-and gives you a `Host` handle back:
+## Advisory view
 
-```go
-type Plugin interface {
-    OnEvent(ctx context.Context, e *Event) error
-    HandleWebhook(ctx context.Context, req *WebhookRequest) (*WebhookResponse, error)
-}
+The separate [Advisories page](docs/advisories.md) at `/security/advisories`
+groups CVE/GHSA and producer-scoped vulnerability identifiers across active
+reports and scanners. Search, filter by scanner/severity, sort, and drill into
+source findings and their tasks.
+
+Advisory groups organize related evidence without merging persistent issues or
+sharing their review status. CVE/GHSA aliases are not inferred. Findings without
+a recognized advisory identifier remain available in **All findings**.
+
+## Reports and retention
+
+**Reports** offers filename search, a searchable scanner filter,
+**Active / All / Archived** buttons with counts, and page navigation. Open a
+report to browse its findings, filter by SARIF level, search messages/rules/paths,
+export its original SARIF, or delete it. **Upload report** opens the import view.
+
+Use **Archive report** beside **Pin report** to hide a report from default views
+while keeping its evidence. **Restore report** includes it again. Archived
+reports remain readable by explicit API/MCP selection and are still eligible for
+retention unless pinned. See [archiving](docs/archiving.md).
+
+Workspace [report retention](docs/retention.md) is disabled by default. Configure
+per-scanner report-count and age limits, scanner overrides, pins, and cleanup
+previews through **Security → Report retention**. Settings are shared by the
+workspace. Age uses first import; reimporting does not reset it. Cleanup keeps
+compact purged-source metadata, issue decisions and task links, while removing
+original report bytes and full findings.
+
+## Start tasks from findings
+
+Choose **Start task** on a finding or in its drawer, then select **Investigate**,
+**Fix**, **Add regression coverage**, or a custom preset. Kandev's native task
+dialog opens with source evidence and exact report references. Review the
+prepared prompt and choose the workflow, repository and agent before creating
+or starting the task.
+
+Presets are shared by the workspace and edited under **Settings → Workspaces →
+your workspace → Integrations → Kandev Security → Task presets**. Created tasks
+link to persistent issues and remain discoverable across reports. See the
+[task preset guide](docs/task-presets.md) for templates, permissions and recovery.
+
+## Agent and workflow access
+
+The plugin contributes tools through Kandev's native MCP connection for Kanban
+and Office task agents, including workflow steps on those surfaces. Enable
+Kandev MCP in the agent profile. Kandev supplies the authenticated task workspace
+and session; no separate MCP server or agent PAT is needed.
+
+- **Audit reports:** seven read-only tools discover reports, inspect source
+  metadata, summarize selected reports, query findings and filters, and read
+  persistent issues. Agents explicitly select 1–50 report IDs for summary,
+  finding-list and filter queries. Results include source hashes, exact finding
+  references and provenance gaps. See the [agent audit guide](docs/agent-tools.md).
+- **Submit findings:** six draft-lifecycle tools let agents build reports one
+  finding at a time. Drafts persist across sessions of the same task; explicit
+  completion publishes immutable SARIF. Reports record task/session attribution,
+  confidence separately from severity, evidence, scope, actual coverage and
+  limitations. Four authoring tools write data; two read drafts. See the
+  [report authoring guide](docs/agent-reporting.md).
+- **Record review decisions:** `set_issue_status` sets both status and reason.
+  Supplying the current status updates only the reason. Changes record verified
+  task/session attribution and review history, with retry protection. See
+  [agent review updates](docs/agent-tools.md#update-issue-review-status-and-reason).
+
+Scripts and external clients can also use authenticated workspace actions through
+the [HTTP API](docs/api.md).
+
+## Import behavior and limits
+
+| Import method | Maximum file size | Authentication |
+| --- | --- | --- |
+| Browser / chunked actions | 20 MiB | Kandev workspace authorization |
+| Raw-file webhook | 16 MiB | Workspace upload token; Kandev PAT when host authentication is enabled |
+
+Both file-import methods accept SARIF **2.1.0**, multiple runs and zero-finding
+reports, with at most **50,000 findings** per report. Imports retain the exact
+original bytes and publish the report and its indexes in one SQLite transaction.
+Invalid or failed imports do not publish partial findings.
+
+SHA-256 detects identical report bytes within a workspace. Reimporting returns
+the existing report and updates its last-import timestamp while preserving its
+original filename, importer and first-import time. A retry of the same chunked
+upload completion does not count as another reimport. New scan output or changed
+formatting produces a separate report; issue matching can group recurring
+findings without removing their source occurrences.
+
+Parser and transport limits:
+
+- At most 1,000 runs, 100,000 driver rules/artifacts per run, and 128 levels of
+  JSON nesting.
+- Finding messages up to 8 KiB; rule IDs up to 1 KiB; primary paths and help URIs
+  up to 2 KiB; scanner names up to 256 bytes; normalized languages up to 128
+  bytes; encoded findings up to 32 KiB; combined run metadata up to 32 KiB.
+- Rule and artifact indices resolve against each run's driver rules and artifacts.
+  An explicit `-1` means unknown, like an omitted index; URI/rule-ID lookup still
+  applies. Other invalid or out-of-range references are rejected.
+- The ingestion parser is bounded and does not perform full SARIF JSON Schema
+  validation. Message-ID-only results, external property files and extension
+  rule tables are not resolved. Materialize result message text before importing.
+- Browser/action uploads use **192 KiB chunks** below the host action request
+  limit, with offset-checked retries. Unfinished staging expires after 24 hours;
+  at most three uploads per workspace and sixteen per installation may be active.
+  Reloading the page does not resume an upload.
+
+Paths, repository URLs and evidence references are never fetched automatically.
+Large evidence is bounded in detail responses; omitted or shortened fields are
+reported. Original SARIF remains available for export while the report is retained.
+
+## Ownership and permissions
+
+Reports, issue reviews, presets and retention settings belong to a Kandev
+workspace. Agent drafts additionally belong to the authenticated task. Actions
+use Kandev's verified workspace context; ownership is never taken from imported
+SARIF or an unverified field inside an action body. There is no additional
+per-report owner permission model.
+
+The manifest requests read-only access to **workspaces**, **workflows** and
+**tasks** for webhook destination checks, native task launch defaults, and linked
+task verification/status. Reports and settings use the plugin's own SQLite
+storage. Host state, secret and repository capabilities are not requested.
+
+Workspace upload tokens grant import-only access and are stored as SHA-256
+hashes. Their secrets are shown once; tokens survive restarts until revoked.
+Webhook imports are attributed to the token issuer. Kandev PATs authenticate
+requests at the host and are not forwarded to the plugin. Plugin tokens are
+independent credentials: revoke them separately when user or PAT access changes.
+See the [API guide](docs/api.md) for authentication details.
+
+## Storage and backups
+
+Kandev injects `KANDEV_PLUGIN_DATA_DIR`; the backend stores its database at:
+
+```text
+<KANDEV_PLUGIN_DATA_DIR>/security.db
 ```
 
-`server/plugin.go`'s `templatePlugin` embeds `pluginsdk.UnimplementedPlugin`
-(a no-op default for both RPCs, plus `Host()`/`SetHost()` accessors) and
-overrides what it needs. `server/main.go` is just
-`pluginsdk.Serve(&templatePlugin{})`.
+The database holds original SARIF, report metadata and indexes, issue history,
+task links, presets, retention settings, upload-token hashes, staging/receipts,
+and agent drafts. SQLite uses WAL mode, foreign keys and a busy timeout. The
+database is created with private file permissions; a pure Go driver allows
+packaging without CGO. The plugin does not encrypt report data.
 
-Newer features are additive optional interfaces. For example, the
-source-control recipe implements `pluginsdk.ActionHandler`,
-`pluginsdk.EntityReferenceSearcher`, and
-`pluginsdk.EntityReferenceAuthorizer`; a provider that needs transient Git
-credentials can separately implement `GitCredentialResolver` and
-`GitCredentialBinder`. Embedding the no-op base preserves the minimal plugin.
+New databases receive the complete current schema atomically. Current-format
+databases reopen without migrations or backfills. Unsupported older development
+formats, newer formats and nonempty unversioned databases fail startup without
+being reset. For an incompatible development database, keep a backup and use a
+new plugin data directory, then explicitly reimport reports. SARIF reimports do
+not restore review history, task links, presets, tokens or drafts.
 
-## Developing against the SDK
+Workspace removal does not automatically purge stored plugin data; its reports
+become inaccessible through that workspace's actions. Uninstalling the plugin
+removes its data through Kandev's normal lifecycle.
 
-`pkg/pluginsdk` is not published as its own module yet, so `go.mod` here uses a
-local `replace`:
+**Back up the plugin data separately.** Stop/disable the plugin before copying
+`security.db`, or use SQLite's online backup facility. Copying only the database
+file during active WAL writes is insufficient. Restore with matching workspace
+IDs in the same Kandev installation. Do not assume Host state backups include
+this plugin-owned database.
 
-```
-replace github.com/kandev/kandev => ../kandev/apps/backend
-```
+## Development
 
-This assumes your plugin repo is checked out as a **sibling** of the `kandev`
-monorepo. `.kandev-sdk-ref` records the exact source revision for Go and
-TypeScript contracts:
+Use Go 1.26 and Node 24. The sibling checkout supplies the SDK:
 
-```
-some-dir/
-├── kandev/                   # https://github.com/kdlbs/kandev, Go module at apps/backend/
-└── kandev-plugin-template/   # this repo
-```
-
-Use these commands to create the sibling layout and select the pinned source:
-
-```sh
-git clone https://github.com/kdlbs/kandev.git kandev
-git clone https://github.com/kdlbs/kandev-plugin-template.git kandev-plugin-template
-git -C kandev checkout "$(cat kandev-plugin-template/.kandev-sdk-ref)"
+```text
+some-directory/
+├── kandev/                   # Go SDK at apps/backend
+└── kandev-security/          # this repository
 ```
 
-Note the module root is `kandev/apps/backend`, not the repo root — `kandev` is
-a monorepo and the Go backend (including `pkg/pluginsdk`) lives one level down.
-Adjust the `replace` path if your layout differs. Once `pkg/pluginsdk` ships as
-a standalone, versioned module, this repo will drop the `replace` and pin a
-real version instead.
-
-The frontend recipe follows the same source-checkout model through
-`@kandev/plugin-sdk` in `package.json`. It is a type-only dependency. The
-default `ui/bundle.js` remains a dependency-free ES module. CI, package builds,
-and releases read the same `.kandev-sdk-ref` file. This source pin is separate
-from `min_kandev_version` in the runtime manifest. The template keeps its
-`0.86.0` floor because it selects the legacy button when `Action` is absent.
-
-## Layout
-
-```
-manifest.yaml          # plugin manifest — id, capabilities, runtime.executables, ui.bundle, config_schema
-server/
-  main.go              # pluginsdk.Serve wiring — no flags, no HTTP, no secrets
-  plugin.go            # templatePlugin: OnEvent / HandleWebhook
-  plugin_test.go       # tests against a fake Host, no subprocess spawn needed
-ui/
-  bundle.js            # hand-written, no-build ES module — the plugin's frontend half
-recipes/source-control/
-  manifest.fragment.yaml
-  server/              # provider-neutral backend ports and contract tests
-  ui/                  # typed native registrations and lifecycle tests
-package.json           # recipe-only TypeScript tests/types; no production bundle
-tsconfig.recipes.json  # strict public-SDK contract check
-```
-
-`ui/bundle.js` is hand-written, dependency-free ES module JavaScript. There is
-no build step: it ships byte-for-byte inside the package tar.gz, and kandev
-serves it directly. Edit the file and repackage — nothing else to run.
-
-## Build and test
-
-Use Go 1.26.0 and a Node version allowed by `package.json`. The CI workflows use
-Node 24. Install the locked UI test dependencies from the plugin directory.
+Before running checks, use the revision in [`.kandev-sdk-ref`](.kandev-sdk-ref)
+in a dedicated sibling Kandev checkout. `go.mod` replaces
+`github.com/kandev/kandev` with `../kandev/apps/backend`; a different SDK revision
+can change transitive Go dependencies. The source pin is separate from the
+minimum supported Kandev runtime version.
 
 ```sh
 npm ci --ignore-scripts
 make check-format
-go mod tidy
-git diff --exit-code -- go.mod go.sum
 make vet
 make test
-make audit-recipes
+make audit-dependencies
 make build
 ```
 
-`make test` runs backend and recipe tests, recipe type checking, the Action
-fallback test, and negative package and release-version checks. The package
-checks do not replace a disposable-host smoke test.
+`make test` covers database/parser/action tests, UI model and registration tests,
+and package/release verifier checks. The dependency audit covers npm test tools.
+`ui/bundle.js` is the shipped ES module using Kandev's host UI components and
+React; there is no production frontend build step. React, Radix, esbuild and
+Playwright in `package.json` support tests.
 
-> Note: bare `go build ./server/...` (no `-o`) fails with `build output
-> "server" already exists and is a directory` — Go's default output name for a
-> lone main package is the last path element ("server"), which collides with
-> the `server/` source directory. Always pass `-o`, run `go build .` from
-> inside `server/`, or use `make build`. `go vet`/`go test` are unaffected.
-
-## Package it
+Browser tests exercise the real UI bundle with React and a mocked host/action
+transport on desktop and mobile:
 
 ```sh
-make package        # cross-compiles linux/darwin (amd64+arm64) + windows/amd64,
-                    # then packs manifest + ui/ + binaries into a versioned .tar.gz
-
-make package-host   # host platform only — faster local iteration
-make verify-package # build + validate the five-platform archive
-make verify-package-host # build + validate the host-platform archive
+npx playwright install chromium
+npm run test:browser
+# Or use a system Chromium:
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/path/to/chromium npm run test:browser
 ```
 
-Both stage `manifest.yaml` and `ui/` beside the freshly built
-`server/plugin-<goos>-<goarch>[.exe]` binaries. Kandev's `cmd/plugin-pack`
-computes `checksums.txt` and writes the archive. The verifier checks every
-manifest-declared binary, the UI bundle, the exact file list, and all checksums.
-It rejects recipe and development files even when their checksums are valid.
-
-The Makefile runs `plugin-pack` with `cd $(KANDEV_SDK) && go run
-./cmd/plugin-pack`, from inside the sibling kandev checkout, rather than as
-`go run github.com/kandev/kandev/cmd/plugin-pack` from here. The second
-spelling resolves plugin-pack's dependencies against *this* module's `go.sum`,
-and plugin-pack reaches much further into the kandev backend than `server/`
-does — so those entries are missing and packaging fails with `missing go.sum
-entry`. Pulling them in would force this template's `go.sum` to track every
-dependency the kandev backend grows. Building the tool where it lives keeps
-`go.sum` scoped to what your plugin actually imports.
-
-## Install it against a running Kandev
-
-The manifest requires Kandev 0.86.0 or later. It packages Linux amd64 and
-arm64, macOS amd64 and arm64, and Windows amd64 binaries. It requests access to
-`task.created` events and plugin-scoped state. The `ping` webhook is public.
-
-Either through the UI (**Settings > Plugins > Install plugin**, URL or file
-upload), or directly:
+The optional curl smoke test uses the plugin handler and SQLite behind a local
+test HTTP bridge; it does not start the Kandev host gateway:
 
 ```sh
-curl -F package=@kandev-plugin-template-0.1.0.tar.gz \
-  http://localhost:<kandev-port>/api/plugins/install
+KANDEV_SECURITY_CURL_SMOKE=1 go test ./server -run TestCurlWebhookUpload -v
 ```
 
-Kandev verifies the package checksums, validates the manifest, extracts the
-package, and starts the host-matching binary. An unsigned package is marked
-unsigned in **Settings > Plugins**. Checksums detect file changes against the
-included checksum list and can catch accidental corruption. They do not prove
-who published the package. A
-directory sideload is a different flow: Kandev registers it as disabled and
-does not start it.
-Reinstalling the same version returns 409 — bump `version` in `manifest.yaml`.
+### Packaging and installation
 
-## Publish a release
+```sh
+make verify-package-host     # Current platform; validates manifest and checksums
+make verify-package          # Linux amd64/arm64, macOS amd64/arm64, Windows amd64
+make package-file            # Print the archive name for the current version
+```
 
-Pull requests run CI, UI and backend tests, and full platform packaging. The
-release workflow supports a manual version bump from `main` and a pushed
-`vX.Y.Z` tag. Both paths run format, vet, test, audit, and package checks before
-GitHub creates a release. Manual releases update the manifest and Makefile,
-then create a commit and matching tag only after those checks pass.
+Install the generated `kandev-security-<version>.tar.gz` through **Settings →
+Plugins**. Kandev supervises the backend process and injects its data directory.
 
-- `kandev-plugin-template-<version>.tar.gz` — the plugin package with its own
-  `checksums.txt`, which Kandev checks during installation.
-- `checksums.txt` — the package's internal file checksums plus the SHA-256
-  checksum of the published package archive.
+The optional [installed-host smoke test](scripts/stable-host-smoke.mjs) checks
+toolbar registration and navigation against a disposable Kandev v0.97.0 host
+with Security installed. It toggles the plugin during testing. Provide a task
+route with a composer, the backend log, and a clean checkout of the matching
+release with its built `apps/web/dist` assets:
 
-In GitHub Actions, open the release workflow from `main`. Choose a version
-bump. Set `dry_run` to `true` to preview the version without publishing.
+```sh
+KANDEV_URL=http://127.0.0.1:18797 \
+KANDEV_SMOKE_TASK_PATH=/t/TASK_ID \
+KANDEV_RELEASE_SOURCE=/path/to/kandev-v0.97.0 \
+KANDEV_SMOKE_HOST_LOG=/path/to/backend.log \
+node scripts/stable-host-smoke.mjs
+```
 
-The tag path requires the tag, manifest version, Makefile version, and package
-manifest to match. To change the SDK source pin, select an exact reviewed host
-commit, update `.kandev-sdk-ref`, then run the documented checks. Do not infer
-a runtime release number from that source commit.
+## Documentation
+
+| Guide | Topics |
+| --- | --- |
+| [API](docs/api.md) | Webhook uploads, curl, authentication and workspace actions |
+| [Agent audit tools](docs/agent-tools.md) | MCP reads, review updates and audit workflows |
+| [Agent report authoring](docs/agent-reporting.md) | Drafts, individual findings, publication and retries |
+| [Issue matching](docs/issues.md) | Deduplication, source history and manual review |
+| [Common finding model](docs/finding-model.md) | SARIF normalization, evidence and projection limits |
+| [Advisories](docs/advisories.md) | Cross-scanner identifier grouping and drill-down |
+| [Task presets](docs/task-presets.md) | Shared templates, task context and linked tasks |
+| [Report retention](docs/retention.md) | Scanner policies, pins, previews and purging |
+| [Archiving](docs/archiving.md) | Archive/restore behavior and report filters |
+| [Changelog](CHANGELOG.md) | Development milestones |
 
 ## License
 
-MIT — see [LICENSE](LICENSE). This template is meant to be copied and made your
-own; your resulting plugin can carry whatever license you choose.
+MIT. See [LICENSE](LICENSE). Based on the
+[kandev-plugin-template](https://github.com/kdlbs/kandev-plugin-template).

@@ -28,6 +28,8 @@ async function loadPlugin({ action, i18n = true }) {
 
   const components = [];
   const navigations = [];
+  const navItems = [];
+  const routes = [];
   const ui = {
     Button: "Button",
     Tooltip: "Tooltip",
@@ -38,6 +40,7 @@ async function loadPlugin({ action, i18n = true }) {
 
   const host = {
     jsx: element,
+    React: {},
     ui,
     navigate(path) {
       navigations.push(path);
@@ -56,15 +59,15 @@ async function loadPlugin({ action, i18n = true }) {
   }
 
   const registry = {
-    registerNavItem() {},
-    registerRoute() {},
+    registerNavItem(item) { navItems.push(item); },
+    registerRoute(path) { routes.push(path); },
     registerWsHandler() {},
     registerComponent(slot, component) {
       components.push({ slot, component });
     },
   };
   definition.initialize(registry, host);
-  return { pluginId, components, host, navigations };
+  return { pluginId, components, host, navigations, navItems, routes };
 }
 
 function findNodes(node, type) {
@@ -84,14 +87,17 @@ test("uses Action once when the host exports it", async () => {
   const loaded = await loadPlugin({ action: Action });
   const control = composerComponent(loaded.components)({ slotProps: { taskTitle: "Example task" } });
 
-  assert.equal(loaded.pluginId, "kandev-plugin-template");
+  assert.equal(loaded.pluginId, "kandev-security");
+  assert.equal(loaded.navItems[0].label, "Security");
+  assert.equal(loaded.navItems[0].path, "/security");
+  assert.deepEqual(loaded.routes, ["/security", "/security/advisories"]);
   assert.equal(control.type, Action);
-  assert.equal(control.props.id, "template-chat-action");
-  assert.equal(control.props.label, "localized:openTemplatePage:Template — open page");
+  assert.equal(control.props.id, "security-chat-action");
+  assert.equal(control.props.label, "localized:openSecurityPage:Security: open page");
   assert.match(control.props.tooltip, /Example task/);
   assert.equal(findNodes(control, "Button").length, 0);
   control.props.onClick();
-  assert.deepEqual(loaded.navigations, ["/template"]);
+  assert.deepEqual(loaded.navigations, ["/security"]);
 });
 
 test("keeps one legacy Button path on a host without Action or i18n", async () => {
@@ -99,12 +105,15 @@ test("keeps one legacy Button path on a host without Action or i18n", async () =
   const control = composerComponent(loaded.components)({ slotProps: { taskId: "task-123" } });
   const buttons = findNodes(control, "Button");
 
-  assert.equal(loaded.pluginId, "kandev-plugin-template");
+  assert.equal(loaded.pluginId, "kandev-security");
+  assert.equal(loaded.navItems[0].label, "Security");
+  assert.equal(loaded.navItems[0].path, "/security");
+  assert.deepEqual(loaded.routes, ["/security", "/security/advisories"]);
   assert.equal(control.type, "Tooltip");
   assert.equal(buttons.length, 1);
-  assert.equal(buttons[0].props.id, "template-chat-action");
+  assert.equal(buttons[0].props.id, "security-chat-action");
   assert.match(buttons[0].props["aria-label"], /task-123/);
   assert.equal(findNodes(control, "Action").length, 0);
   buttons[0].props.onClick();
-  assert.deepEqual(loaded.navigations, ["/template"]);
+  assert.deepEqual(loaded.navigations, ["/security"]);
 });

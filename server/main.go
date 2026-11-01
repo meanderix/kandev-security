@@ -1,14 +1,50 @@
-// Command kandev-plugin-template is the backend half of this kandev plugin.
-// It implements pluginsdk.Plugin (see plugin.go) and is spawned by kandev as
-// a gRPC subprocess — there is no HTTP server, no listen address, and no
-// secrets to configure: pluginsdk.Serve owns the entire transport.
-//
-// To make this your own, rename `templatePlugin` in plugin.go (and keep the
-// id in manifest.yaml, go.mod's module line, and ui/bundle.js in sync).
+// Command kandev-security runs the supervised security reports plugin.
 package main
 
-import "github.com/kandev/kandev/pkg/pluginsdk"
+import (
+	"context"
+	"log"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/kandev/kandev/pkg/pluginsdk"
+	"kandev-security/internal/reports"
+)
 
 func main() {
-	pluginsdk.Serve(&templatePlugin{})
+	dir := os.Getenv("KANDEV_PLUGIN_DATA_DIR")
+	if dir == "" {
+		log.Fatal("KANDEV_PLUGIN_DATA_DIR is required")
+	}
+	store, err := reports.Open(filepath.Join(dir, "security.db"))
+	if err != nil {
+		log.Fatalf("initialize security reports: %v", err)
+	}
+	defer store.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	var worker sync.WaitGroup
+	worker.Add(1)
+	go func() { defer worker.Done(); runRetentionWorker(ctx, store) }()
+	defer func() { cancel(); worker.Wait() }()
+	pluginsdk.Serve(&securityPlugin{store: store})
+}
+
+func runRetentionWorker(ctx context.Context, store *reports.Store) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		runCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+		err := store.RunAllRetention(runCtx)
+		cancel()
+		if err != nil && ctx.Err() == nil {
+			log.Printf("security report retention: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

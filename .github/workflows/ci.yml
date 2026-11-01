@@ -38,9 +38,7 @@ jobs:
           repository: kdlbs/kandev
           path: kandev
           ref: ${{ steps.sdk.outputs.ref }}
-          sparse-checkout: |
-            apps/backend
-            apps/packages/plugin-sdk
+          sparse-checkout: apps/backend
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -55,7 +53,7 @@ jobs:
           cache: npm
           cache-dependency-path: plugin/package-lock.json
 
-      - name: Install recipe test dependencies
+      - name: Install UI test dependencies
         working-directory: plugin
         run: npm ci --ignore-scripts
 
@@ -77,10 +75,18 @@ jobs:
         working-directory: plugin
         run: |
           make test
-          make audit-recipes
+          make audit-dependencies
+
+      - name: Install Chromium for browser tests
+        working-directory: plugin
+        run: npx playwright install --with-deps chromium
+
+      - name: Desktop and mobile browser tests
+        working-directory: plugin
+        run: npm run test:browser
 
   base-floor:
-    name: Default template on Kandev v0.86.0
+    name: Kandev Security on Kandev v0.97.0
     runs-on: ubuntu-latest
     steps:
       - name: Check out plugin
@@ -93,7 +99,7 @@ jobs:
         with:
           repository: kdlbs/kandev
           path: kandev
-          ref: v0.86.0
+          ref: v0.97.0
           sparse-checkout: apps/backend
 
       - name: Set up Go
@@ -102,6 +108,6 @@ jobs:
           go-version-file: plugin/go.mod
           cache-dependency-path: plugin/go.sum
 
-      - name: Test provider-free generated backend
+      - name: Test Security backend against the minimum SDK
         working-directory: plugin
-        run: go test ./server/...
+        run: go test ./server/... ./internal/...

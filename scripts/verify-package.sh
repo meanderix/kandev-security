@@ -58,11 +58,11 @@ for executable in $executable_paths; do
 done
 
 forbidden_path=$(find "$package_dir" \
-	\( -name recipes -o -name scripts -o -name node_modules \
+	\( -name tests -o -name docs -o -name scripts -o -name node_modules \
 		-o -name package.json -o -name package-lock.json \
-		-o -name tsconfig.recipes.json -o -name '*.test.js' \) \
+		-o -name playwright.config.js -o -name '*.test.js' \) \
 	-print -quit)
-[ -z "$forbidden_path" ] || fail "forbidden recipe or development path: ${forbidden_path#"$package_dir"/}"
+[ -z "$forbidden_path" ] || fail "forbidden development path: ${forbidden_path#"$package_dir"/}"
 
 expected_files=$(printf '%s\n' manifest.yaml ui/bundle.js checksums.txt $executable_paths | LC_ALL=C sort)
 actual_files=$(cd "$package_dir" && find . -type f -print | sed 's#^\./##' | LC_ALL=C sort)

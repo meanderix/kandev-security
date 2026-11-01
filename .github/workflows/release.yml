@@ -74,9 +74,7 @@ jobs:
           repository: kdlbs/kandev
           path: kandev
           ref: ${{ steps.sdk.outputs.ref }}
-          sparse-checkout: |
-            apps/backend
-            apps/packages/plugin-sdk
+          sparse-checkout: apps/backend
 
       - name: Set up Go
         if: ${{ !inputs.dry_run }}
@@ -194,7 +192,7 @@ jobs:
           make check-format
           make vet
           make test
-          make audit-recipes
+          make audit-dependencies
           make verify-package
           PACKAGE_FILE="$(make --no-print-directory -s package-file)"
           sh scripts/verify-release-version.sh "$TAG" "$PACKAGE_FILE"
@@ -249,9 +247,7 @@ jobs:
           repository: kdlbs/kandev
           path: kandev
           ref: ${{ steps.sdk.outputs.ref }}
-          sparse-checkout: |
-            apps/backend
-            apps/packages/plugin-sdk
+          sparse-checkout: apps/backend
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -283,7 +279,7 @@ jobs:
           make check-format
           make vet
           make test
-          make audit-recipes
+          make audit-dependencies
           make verify-package
           PACKAGE_FILE="$(make --no-print-directory -s package-file)"
           sh scripts/verify-release-version.sh "$TAG" "$PACKAGE_FILE"
