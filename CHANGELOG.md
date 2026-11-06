@@ -1,9 +1,21 @@
 # Changelog
 
-Kandev Security has not yet been published. This history groups development
-changes by minor version, with patch changes included under their corresponding
-minor version. It starts with the first packaged Security implementation, 0.2;
-release history inherited from the plugin template is excluded.
+This history groups changes by minor version, with patch changes included under
+their corresponding minor version. It starts with the first packaged Security
+implementation, 0.2; release history inherited from the plugin template is excluded.
+
+## 0.15 — Automation support and workspace audit queries
+
+- Expose all 14 MCP tools to owner-approved automation runs, preserving verified
+  workspace/task ownership, draft isolation and review attribution. Document
+  per-automation tool approval and reselection after plugin/configuration changes.
+- Require Kandev 0.99.0 for automation support and use its standalone plugin SDK;
+  update pinned build, CI, release and installed-host smoke contracts.
+- Make `report_ids` optional for MCP finding lists, audit summaries and filter
+  discovery, defaulting to all active workspace reports. Preserve exact explicit
+  selections, including archived reports, and reject empty/null selections.
+- Return complete workspace query counts with bounded, explicitly marked source
+  metadata and hash-bearing references for every returned finding.
 
 ## 0.14 — Agent review updates and database initialization
 

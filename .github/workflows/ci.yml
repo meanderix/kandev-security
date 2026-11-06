@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The local SDK replacement in go.mod expects these checkouts to be
-      # siblings: plugin/../kandev/apps/backend.
+      # siblings: plugin/../kandev/pluginsdk.
       - name: Check out plugin
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -38,7 +38,9 @@ jobs:
           repository: kdlbs/kandev
           path: kandev
           ref: ${{ steps.sdk.outputs.ref }}
-          sparse-checkout: apps/backend
+          sparse-checkout: |
+            apps/backend
+            pluginsdk
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -86,7 +88,7 @@ jobs:
         run: npm run test:browser
 
   base-floor:
-    name: Kandev Security on Kandev v0.97.0
+    name: Kandev Security on Kandev v0.99.0
     runs-on: ubuntu-latest
     steps:
       - name: Check out plugin
@@ -99,8 +101,10 @@ jobs:
         with:
           repository: kdlbs/kandev
           path: kandev
-          ref: v0.97.0
-          sparse-checkout: apps/backend
+          ref: v0.99.0
+          sparse-checkout: |
+            apps/backend
+            pluginsdk
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6

@@ -1,6 +1,6 @@
 # Archive and restore reports
 
-Requires Kandev **0.97.0** or later.
+Requires Kandev **0.99.0** or later.
 
 Open **Security → Reports**. **Archive report** sits beside **Pin report** on
 report rows and individual report pages. Use the **Archived** or

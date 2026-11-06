@@ -18,14 +18,14 @@ references and severity provenance. HTTP bodies are literal, bounded evidence;
 normalization notes and `truncated` describe incomplete projections. These fields
 are additive to the existing tools and require no new tool arguments.
 
-Kandev Security must be installed and enabled on Kandev 0.97.0 or later. The
+Kandev Security must be installed and enabled on Kandev 0.99.0 or later. The
 plugin contributes tools through Kandev's existing MCP connection; it does not
 run another MCP server. The agent profile must have Kandev MCP enabled.
 
-Tools are available to authenticated `kanban-task` and `office-task` sessions.
-Workflow step agents on those surfaces can use them. External/configuration MCP
-clients and automation coordinator sessions do not receive these tools. Scripts
-and external clients can use the existing [HTTP API](api.md).
+Tools are available to authenticated `kanban-task` and `office-task` sessions,
+including workflow step agents, and to owner-approved `automation` runs.
+External/configuration MCP clients do not receive these tools. Scripts and
+external clients can use the existing [HTTP API](api.md).
 
 Kandev supplies the task, session, workspace, and invocation identity. Tool
 arguments cannot select or override a workspace. No separate PAT or `ksr_` upload
@@ -34,6 +34,32 @@ issue review status and reason with verified task/session attribution.
 [Report-authoring tools](agent-reporting.md) can start drafts, submit individual
 findings, publish reports and cancel drafts. No tool deletes published reports,
 creates upload tokens or creates Kandev tasks.
+
+## Automation setup
+
+In the workspace's automation editor, expand **Plugin tools (optional)**,
+select the required Kandev Security tools, and **Save**. The plugin must be
+installed, enabled and configured, and the agent profile must have Kandev MCP
+enabled. Start a new run to check the selected tools. Private runs can remain
+in automation history; creating a normal Kanban task is not required.
+
+All 14 tools can be selected individually. For report generation, select
+`start_report`, `submit_finding`, `complete_report`, and `cancel_report`; add
+`list_report_drafts` and `get_report_draft` to inspect or resume drafts. Select
+audit tools for reading published findings and `set_issue_status` only when
+the automation should record review decisions.
+
+Kandev checks the saved approval during discovery and every call. Approval is
+bound to this automation, workspace, plugin installation and policy version.
+Reinstalling the plugin or saving its configuration, including a secret-only
+change, requires reviewing and selecting the tools again. Clearing the selection
+removes access. The plugin relies on Kandev's verified context; tool arguments
+cannot override its workspace, task or session.
+
+Drafts belong to the run's task. With **Start a new task for every run**, each
+firing owns separate drafts; **Continue the previous session** can resume drafts
+when Kandev reuses the same task. A replacement task cannot access the old task's
+drafts. Published reports are readable throughout their workspace.
 
 ## Audit and review tools
 
@@ -45,12 +71,12 @@ The names below are plugin-local. Kandev exposes them with the prefix
 | --- | --- | --- | --- |
 | `list_reports` | Read | Optional `offset`, `status` (`active` default, `archived`, `all`) | Report IDs, SHA-256 hashes, filenames, scanner labels, finding counts, import times, total and pagination |
 | `get_report` | Read | Required `report_id` | Report identity, scanner runs, available repository/branch/revision/version, `provenance_gaps`, `provenance_incomplete` |
-| `get_audit_summary` | Read | Required `report_ids` | Selected source reports, occurrence counts by severity, scanner names, latest selected-report import time, report IDs with incomplete provenance |
-| `list_findings` | Read | Required `report_ids`; optional `language`, `tool`, `rule`, `severity`, `search`, `sort`, `offset` | Compact findings with report/ordinal references, selected source hashes, counts and pagination |
+| `get_audit_summary` | Read | Optional `report_ids` | Report scope/count, bounded source references, occurrence counts by severity, scanner names, latest scope import time and incomplete-provenance metadata |
+| `list_findings` | Read | Optional `report_ids`, `language`, `tool`, `rule`, `severity`, `search`, `sort`, `offset` | Compact findings with report/ordinal references, source hashes, report scope/count, finding counts and pagination |
 | `get_issue` | Read | Required `issue_id`; optional `offset`, `history_offset` | Conservative issue identity, manual status, retained source occurrences across this workspace, and status history |
 | `set_issue_status` | Write | Required `issue_id`, `status` (`open` or `closed`), `reason` | Current `issue`, `changed`, `replayed`; same-status calls can update the reason alone |
 | `get_finding` | Read | Required `report_id` and zero-based `ordinal` | Exact finding, source report/run, description, scanner guidance, suggested fixes and provenance gaps |
-| `list_filter_values` | Read | Required `report_ids` and `facet`; optional `search`, `offset` | Exact language/tool/rule values within the selected reports, source references and pagination |
+| `list_filter_values` | Read | Required `facet`; optional `report_ids`, `search`, `offset` | Exact language/tool/rule values within the report scope, bounded source references and pagination |
 
 Report authoring provides six tools: `start_report`, `list_report_drafts`,
 `get_report_draft`, `submit_finding`, `complete_report`, and `cancel_report`.
@@ -58,11 +84,53 @@ The two draft discovery/read tools are read-only; the other four are declared
 writes. Draft access is task-owned; published reports remain workspace-readable.
 See the [authoring guide](agent-reporting.md) for the complete lifecycle and examples.
 
-`report_ids` must contain 1–50 unique IDs. Every ID must exist in the task's
-workspace. An unknown, deleted, or foreign report fails the entire selection;
-results never silently omit unavailable selected reports. Use `list_reports`
-again if the selection becomes unavailable. There is no implicit "latest scan"
-selection: choose and retain the report IDs for each audit.
+### Report selection
+
+For `list_findings`, `get_audit_summary` and `list_filter_values`, omit
+`report_ids` to query **all active, retained reports in the authenticated
+workspace**. This scope includes workspaces with more than 50 reports. Archived
+and retention-purged sources are excluded. A workspace with no active reports
+returns empty results and zero counts.
+
+When supplied, `report_ids` must contain 1–50 unique IDs. Every ID must exist in
+the task's workspace; explicit selections may include archived reports. An
+unknown, deleted, purged or foreign report fails the entire selection. Empty
+arrays and `null` are invalid; neither falls back to a workspace-wide query.
+Use `list_reports` again if an explicit selection becomes unavailable.
+
+For example, call `list_findings` with:
+
+```json
+{"severity": "critical"}
+```
+
+Call `get_audit_summary` with `{}` for workspace totals, or
+`list_filter_values` with `{"facet": "tool"}` to discover scanners represented
+in active findings. Pass `report_ids` to any of these tools to narrow the scope.
+Scanner runs with zero findings appear in the summary, but not finding facets.
+
+Responses identify `report_scope` as `active_workspace` or `explicit`.
+`report_count` is the complete number of reports in that scope, before finding
+filters, including zero-finding reports. Workspace queries reflect current data
+on each call; imports, archiving, deletion or retention can change results and
+offset pagination between calls. Choose and retain explicit report IDs for a
+repeatable audit over a known evidence set. Neither scope implicitly selects
+only the latest scan from each scanner.
+
+The `reports` metadata array is bounded separately from the query:
+
+- Workspace finding pages include a SHA-256 reference for every returned
+  finding's source report. References may also cover items removed when a page
+  is shortened to fit the response budget.
+- Workspace summaries and filter queries include the first 50 report references
+  ordered by report ID. Explicit queries include every selected report reference.
+- `reports_truncated` indicates that `reports` does not enumerate the full scope.
+  It does not limit finding totals, finding pages, filter values or summary counts.
+  Use `list_reports` pagination and `get_report` for additional source metadata.
+
+Summary `provenance_incomplete_report_count` covers the entire scope. Its
+`provenance_incomplete_report_ids` list is bounded to 50, with
+`provenance_incomplete_report_ids_truncated` when more reports have gaps.
 
 Finding filters combine with AND. Empty optional filters include all values.
 Language, tool, and rule values match exactly. `facet` is `language`, `tool`, or
@@ -70,7 +138,7 @@ Language, tool, and rule values match exactly. `facet` is `language`, `tool`, or
 Sort is `severity` (default), `newest`, `oldest`, `recently_updated`, or
 `least_recently_updated`. Unlike the UI's severity overview, the MCP finding
 counts honor **every** supplied filter, including severity. Use
-`get_audit_summary` for totals over the entire selected report set.
+`get_audit_summary` for totals over the entire report scope.
 
 ## Update issue review status and reason
 
@@ -155,12 +223,13 @@ those references and changes only the last-reimport timestamp.
   evidence. `get_finding` omits presentation-only Markdown trees and bounds
   description and guidance strings to 12 KiB each. Other existing parser limits
   still apply. `truncated: true` and notices identify shortened text or coverage
-  values. Original SARIF bytes are unchanged.
+  values or source metadata lists. Original SARIF bytes are unchanged.
 - Summary scanner names are bounded to 100, with `scanners_truncated` when more
   exist. `get_report` supplies the exact scanner runs for a particular report.
 - Each JSON representation is bounded to 400 KiB so text plus structured data fit
   Kandev's 1 MiB tool result limit. Narrow the selection or filters if a result
-  cannot fit. No source report is silently dropped to satisfy this limit.
+  cannot fit. Bounded report-reference/provenance lists have explicit truncation
+  flags; no source report is silently dropped from the query to satisfy this limit.
 - Errors set MCP `isError` and return `error.code` and `error.message` in the same
   envelope. Codes include `forbidden`, `invalid_arguments`, `not_found`,
   `unknown_tool`, `unavailable`, `storage_error`, and `result_too_large`. Authoring
@@ -181,6 +250,10 @@ to the checked-out code where possible; acknowledge missing provenance in the
 audit conclusions.
 
 ## Suggested audit workflow
+
+For workspace-wide triage, start with `get_audit_summary` using `{}` and query
+`list_findings` with the desired filters. For an audit with explicit source
+selection:
 
 1. Discover reports with `list_reports`, including later pages.
 2. Inspect plausible sources with `get_report` and select the exact report IDs.

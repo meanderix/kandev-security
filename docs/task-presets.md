@@ -1,6 +1,6 @@
 # Start tasks from security findings
 
-Requires Kandev **0.97.0** or later.
+Requires Kandev **0.99.0** or later.
 
 Each row in the aggregated findings view and each finding drawer has a **Start
 task** menu. Choose a preset to open Kandev's native task creation dialog with a

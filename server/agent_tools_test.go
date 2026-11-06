@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
-	"github.com/kandev/kandev/pkg/pluginsdk"
+	"github.com/kdlbs/kandev/pluginsdk"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
 	"kandev-security/internal/reports"
@@ -98,7 +99,7 @@ func TestAuditToolsRejectAuthoritySpoofingAndWrites(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args map[string]any
-	}{{"reports.delete", map[string]any{"id": id}}, {"tokens.create", map[string]any{"name": "secret"}}, {"list_reports", map[string]any{"workspace_id": "private"}}, {"get_report", map[string]any{"report_id": id, "task_id": "other"}}, {"get_finding", map[string]any{"report_id": id}}, {"get_finding", map[string]any{"report_id": id, "ordinal": 0.5}}, {"list_findings", map[string]any{}}, {"list_reports", map[string]any{"offset": -1}}} {
+	}{{"reports.delete", map[string]any{"id": id}}, {"tokens.create", map[string]any{"name": "secret"}}, {"list_reports", map[string]any{"workspace_id": "private"}}, {"get_report", map[string]any{"report_id": id, "task_id": "other"}}, {"get_finding", map[string]any{"report_id": id}}, {"get_finding", map[string]any{"report_id": id, "ordinal": 0.5}}, {"list_findings", map[string]any{"report_ids": []string{}}}, {"list_reports", map[string]any{"offset": -1}}} {
 		result, err := p.InvokeAgentTool(context.Background(), auditRequest(tc.name, tc.args))
 		if err != nil || !result.IsError {
 			t.Fatalf("accepted %s: %+v %v", tc.name, result, err)
@@ -145,44 +146,54 @@ func TestAuditToolResultBudgetAndTextFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seen := map[float64]bool{}
-	offset := 0
-	for {
-		req := auditRequest("list_findings", map[string]any{"report_ids": []string{report.ID}, "offset": offset})
-		r, err := p.InvokeAgentTool(context.Background(), req)
-		if err != nil || r.IsError {
-			t.Fatalf("page: %+v %v", r, err)
-		}
-		encoded, _ := json.Marshal(r.StructuredContent)
-		if len(encoded)+len(r.Text) > 1<<20 {
-			t.Fatal("exceeded host limit")
-		}
-		var fallback map[string]any
-		if err = json.Unmarshal([]byte(r.Text), &fallback); err != nil || fallback["source"] != "imported_sarif" {
-			t.Fatal("unusable text fallback")
-		}
-		if r.StructuredContent["truncated"] != true {
-			t.Fatal("shortened messages not marked")
-		}
-		data := r.StructuredContent["data"].(map[string]any)
-		for _, item := range data["items"].([]any) {
-			ordinal := item.(map[string]any)["ordinal"].(float64)
-			if seen[ordinal] {
-				t.Fatal("duplicate page item")
+	for _, explicit := range []bool{true, false} {
+		seen := map[float64]bool{}
+		offset := 0
+		for {
+			args := map[string]any{"offset": offset}
+			if explicit {
+				args["report_ids"] = []string{report.ID}
 			}
-			seen[ordinal] = true
+			req := auditRequest("list_findings", args)
+			r, err := p.InvokeAgentTool(context.Background(), req)
+			if err != nil || r.IsError {
+				t.Fatalf("page: %+v %v", r, err)
+			}
+			encoded, _ := json.Marshal(r.StructuredContent)
+			if len(encoded)+len(r.Text) > 1<<20 {
+				t.Fatal("exceeded host limit")
+			}
+			var fallback map[string]any
+			if err = json.Unmarshal([]byte(r.Text), &fallback); err != nil || fallback["source"] != "imported_sarif" {
+				t.Fatal("unusable text fallback")
+			}
+			if r.StructuredContent["truncated"] != true {
+				t.Fatal("shortened messages not marked")
+			}
+			data := r.StructuredContent["data"].(map[string]any)
+			refs := data["reports"].([]any)
+			if len(refs) != 1 || refs[0].(map[string]any)["sha256"] != report.Digest {
+				t.Fatal("page resizing lost source hash", data)
+			}
+			for _, item := range data["items"].([]any) {
+				ordinal := item.(map[string]any)["ordinal"].(float64)
+				if seen[ordinal] {
+					t.Fatal("duplicate page item")
+				}
+				seen[ordinal] = true
+			}
+			next := int(data["next_offset"].(float64))
+			if next == 0 {
+				break
+			}
+			if next <= offset {
+				t.Fatal("pagination stuck")
+			}
+			offset = next
 		}
-		next := int(data["next_offset"].(float64))
-		if next == 0 {
-			break
+		if len(seen) != 40 {
+			t.Fatalf("lost findings: %d", len(seen))
 		}
-		if next <= offset {
-			t.Fatal("pagination stuck")
-		}
-		offset = next
-	}
-	if len(seen) != 40 {
-		t.Fatalf("lost findings: %d", len(seen))
 	}
 }
 
@@ -212,6 +223,11 @@ func compileAuditSchema(t *testing.T, value map[string]any) *jsonschema.Schema {
 	return schema
 }
 func TestDeclaredAuditSchemasMatchHandlers(t *testing.T) {
+	for _, surface := range []string{"kanban-task", "office-task", "automation"} {
+		t.Run(surface, func(t *testing.T) { testDeclaredAuditSchemasMatchHandlers(t, surface) })
+	}
+}
+func testDeclaredAuditSchemasMatchHandlers(t *testing.T, surface string) {
 	raw, err := os.ReadFile("../manifest.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -259,7 +275,7 @@ func TestDeclaredAuditSchemasMatchHandlers(t *testing.T) {
 				t.Fatal("undeclared handler")
 			}
 			writes := map[string]bool{"set_issue_status": true, "start_report": true, "submit_finding": true, "complete_report": true, "cancel_report": true}
-			if tool.Annotations["read_only_hint"] == writes[tool.Name] || tool.Annotations["destructive_hint"] != (tool.Name == "cancel_report") || !tool.Annotations["idempotent_hint"] || tool.Annotations["open_world_hint"] || len(tool.Surfaces) != 2 {
+			if tool.Annotations["read_only_hint"] == writes[tool.Name] || tool.Annotations["destructive_hint"] != (tool.Name == "cancel_report") || !tool.Annotations["idempotent_hint"] || tool.Annotations["open_world_hint"] || !slices.Equal(tool.Surfaces, []string{"kanban-task", "office-task", "automation"}) {
 				t.Fatal("incorrect tool annotations/surfaces")
 			}
 			input, output := compileAuditSchema(t, tool.Input), compileAuditSchema(t, tool.Output)
@@ -273,7 +289,9 @@ func TestDeclaredAuditSchemasMatchHandlers(t *testing.T) {
 			if err = input.Validate(spoof); err == nil {
 				t.Fatal("schema permits authority override")
 			}
-			result, err := p.InvokeAgentTool(context.Background(), auditRequest(tool.Name, body))
+			req := auditRequest(tool.Name, body)
+			req.Context.Surface = surface
+			result, err := p.InvokeAgentTool(context.Background(), req)
 			if err != nil || result.IsError {
 				t.Fatalf("dispatch: %+v %v", result, err)
 			}

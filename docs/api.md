@@ -1,6 +1,6 @@
 # Security reports API
 
-Requires Kandev Security installed and enabled on Kandev 0.97.0 or later.
+Requires Kandev Security installed and enabled on Kandev 0.99.0 or later.
 **Direct webhook uploads are the recommended approach for scripts and
 CI.** They send the original SARIF file in one request, with no base64 or chunks.
 

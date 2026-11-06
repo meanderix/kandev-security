@@ -4,11 +4,11 @@
 
 # Keep BIN and VERSION aligned with the manifest ID and version.
 BIN := bin/kandev-security
-VERSION := 0.14.4
+VERSION := 0.15.0
 STAGE := .build/stage
 PKG_OUT := $(notdir $(BIN))-$(VERSION).tar.gz
 
-# Build plugin-pack in the pinned SDK module so packaging uses the host's
+# Build plugin-pack in the pinned backend module so packaging uses the host's
 # dependencies without adding the full Kandev backend dependency set here.
 KANDEV_SDK := ../kandev/apps/backend
 
@@ -53,8 +53,8 @@ vet:
 ## Cross-compile server/plugin-<goos>-<goarch>[.exe] for every platform in
 ## manifest.yaml's runtime.executables, stage manifest.yaml + ui/ alongside
 ## them, and pack the tree into $(PKG_OUT) with
-## github.com/kandev/kandev/cmd/plugin-pack (resolved via the `replace` in
-## go.mod). Install the tarball via Settings > Plugins or curl -F package=@...
+## github.com/kandev/kandev/cmd/plugin-pack from KANDEV_SDK. Install the
+## tarball via Settings > Plugins or curl -F package=@...
 package:
 	rm -rf $(STAGE)
 	mkdir -p $(STAGE)/server

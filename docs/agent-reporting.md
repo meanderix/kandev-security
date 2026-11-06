@@ -1,14 +1,16 @@
 # Build security reports through MCP
 
-Requires Kandev **0.97.0** or later. Task agents can
+Requires Kandev **0.99.0** or later. Task agents can
 submit individual structured findings without assembling SARIF themselves. The
 plugin persists a draft, then validates and generates an immutable SARIF 2.1.0
 report when the agent explicitly completes it. Published results appear in the
 existing report list, grouped issues, filters, finding drawers and SARIF export.
 
 Tools are available on `kanban-task` and `office-task` surfaces, including workflow
-step agents on those surfaces. Use discovered names; Kandev prefixes plugin-local
-names with `kandev_kandev_security_`. No PAT or workspace upload token is needed.
+step agents, and on `automation` after the owner selects and saves the tools in
+the automation editor. See [automation setup](agent-tools.md#automation-setup)
+for approvals and draft ownership across runs. Use discovered names; Kandev
+prefixes plugin-local names with `kandev_kandev_security_`. No PAT or workspace upload token is needed.
 The four authoring tools are declared as writes in the manifest; the original
 seven audit tools remain read-only. `cancel_report` is marked destructive because
 it discards unpublished findings. Normal Kandev tool availability/approval applies.

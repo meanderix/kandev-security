@@ -5,7 +5,7 @@ security reports. Import SARIF from scanners, let AI agents submit findings,
 review recurring issues across reports, and start investigation or remediation
 tasks with the source evidence attached.
 
-Requires **Kandev 0.97.0 or later**.
+Requires **Kandev 0.99.0 or later**.
 
 ## Getting started
 
@@ -160,14 +160,21 @@ link to persistent issues and remain discoverable across reports. See the
 ## Agent and workflow access
 
 The plugin contributes tools through Kandev's native MCP connection for Kanban
-and Office task agents, including workflow steps on those surfaces. Enable
-Kandev MCP in the agent profile. Kandev supplies the authenticated task workspace
+and Office task agents, including workflow steps, and owner-approved automation
+runs. Enable Kandev MCP in the agent profile. Kandev supplies the authenticated task workspace
 and session; no separate MCP server or agent PAT is needed.
 
+For automations, select individual Security tools under **Plugin tools (optional)**
+in the automation editor and save. Private runs can read reports, submit findings
+and record reviews without creating a normal Kanban task. Plugin reinstallations
+or configuration changes require reviewing and selecting the tools again.
+See [automation setup](docs/agent-tools.md#automation-setup).
+
 - **Audit reports:** seven read-only tools discover reports, inspect source
-  metadata, summarize selected reports, query findings and filters, and read
-  persistent issues. Agents explicitly select 1–50 report IDs for summary,
-  finding-list and filter queries. Results include source hashes, exact finding
+  metadata, summarize reports, query findings and filters, and read persistent
+  issues. Summary, finding-list and filter queries default to all active workspace
+  reports; agents can select 1–50 exact report IDs for a focused audit, including
+  archived sources. Results include source hashes, exact finding
   references and provenance gaps. See the [agent audit guide](docs/agent-tools.md).
 - **Submit findings:** six draft-lifecycle tools let agents build reports one
   finding at a time. Drafts persist across sessions of the same task; explicit
@@ -281,14 +288,14 @@ Use Go 1.26 and Node 24. The sibling checkout supplies the SDK:
 
 ```text
 some-directory/
-├── kandev/                   # Go SDK at apps/backend
+├── kandev/                   # SDK at pluginsdk; packager at apps/backend
 └── kandev-security/          # this repository
 ```
 
 Before running checks, use the revision in [`.kandev-sdk-ref`](.kandev-sdk-ref)
 in a dedicated sibling Kandev checkout. `go.mod` replaces
-`github.com/kandev/kandev` with `../kandev/apps/backend`; a different SDK revision
-can change transitive Go dependencies. The source pin is separate from the
+`github.com/kdlbs/kandev/pluginsdk` with `../kandev/pluginsdk`; a different SDK
+revision can change transitive Go dependencies. The source pin is separate from the
 minimum supported Kandev runtime version.
 
 ```sh
@@ -335,7 +342,7 @@ Install the generated `kandev-security-<version>.tar.gz` through **Settings →
 Plugins**. Kandev supervises the backend process and injects its data directory.
 
 The optional [installed-host smoke test](scripts/stable-host-smoke.mjs) checks
-toolbar registration and navigation against a disposable Kandev v0.97.0 host
+toolbar registration and navigation against a disposable Kandev v0.99.0 host
 with Security installed. It toggles the plugin during testing. Provide a task
 route with a composer, the backend log, and a clean checkout of the matching
 release with its built `apps/web/dist` assets:
@@ -343,7 +350,7 @@ release with its built `apps/web/dist` assets:
 ```sh
 KANDEV_URL=http://127.0.0.1:18797 \
 KANDEV_SMOKE_TASK_PATH=/t/TASK_ID \
-KANDEV_RELEASE_SOURCE=/path/to/kandev-v0.97.0 \
+KANDEV_RELEASE_SOURCE=/path/to/kandev-v0.99.0 \
 KANDEV_SMOKE_HOST_LOG=/path/to/backend.log \
 node scripts/stable-host-smoke.mjs
 ```

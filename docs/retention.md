@@ -1,6 +1,6 @@
 # Report retention
 
-Requires Kandev **0.97.0** or later.
+Requires Kandev **0.99.0** or later.
 
 Open **Security → Report retention**, or **Settings → Workspaces → your
 workspace → Integrations → Kandev Security**. Settings are shared by the

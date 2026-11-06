@@ -47,25 +47,34 @@ type AuditQuery struct {
 	AggregateQuery
 	ReportIDs []string `json:"report_ids"`
 }
+type AuditSelection struct {
+	ReportScope      string `json:"report_scope"`
+	ReportCount      int    `json:"report_count"`
+	ReportsTruncated bool   `json:"reports_truncated"`
+}
 type AuditFindingPage struct {
+	AuditSelection
 	Reports []ReportReference `json:"reports"`
 	AggregatePage
 	HasMore bool `json:"has_more"`
 }
 type AuditFacetPage struct {
+	AuditSelection
 	Reports []ReportReference `json:"reports"`
 	FacetPage
 	HasMore bool `json:"has_more"`
 }
 type AuditSummary struct {
-	Reports                       []ReportReference `json:"reports"`
-	ReportCount                   int               `json:"report_count"`
-	FindingCount                  int               `json:"finding_count"`
-	SeverityCounts                map[string]int    `json:"severity_counts"`
-	Scanners                      []string          `json:"scanners"`
-	ScannersTruncated             bool              `json:"scanners_truncated"`
-	LatestImportAt                string            `json:"latest_import_at"`
-	ProvenanceIncompleteReportIDs []string          `json:"provenance_incomplete_report_ids"`
+	AuditSelection
+	Reports                                []ReportReference `json:"reports"`
+	FindingCount                           int               `json:"finding_count"`
+	SeverityCounts                         map[string]int    `json:"severity_counts"`
+	Scanners                               []string          `json:"scanners"`
+	ScannersTruncated                      bool              `json:"scanners_truncated"`
+	LatestImportAt                         string            `json:"latest_import_at"`
+	ProvenanceIncompleteReportIDs          []string          `json:"provenance_incomplete_report_ids"`
+	ProvenanceIncompleteReportCount        int               `json:"provenance_incomplete_report_count"`
+	ProvenanceIncompleteReportIDsTruncated bool              `json:"provenance_incomplete_report_ids_truncated"`
 }
 
 func reference(r Report) ReportReference {
@@ -222,11 +231,8 @@ func auditWhere(workspace string, q AuditQuery) (string, []any, error) {
 	if q.Offset < 0 || len(q.Language) > 128 || len(q.Tool) > 256 || len(q.Rule) > 1024 || len(q.Search) > 256 || (q.Severity != "" && severityRank(q.Severity) == 0) {
 		return "", nil, ErrInvalid
 	}
-	where := " FROM findings f JOIN reports r ON r.id=f.report_id WHERE r.workspace_id=? AND r.id IN (" + placeholders(len(q.ReportIDs)) + ")"
-	args := []any{workspace}
-	for _, id := range q.ReportIDs {
-		args = append(args, id)
-	}
+	condition, args := auditReportCondition(workspace, q.ReportIDs, "r")
+	where := " FROM findings f JOIN reports r ON r.id=f.report_id WHERE " + condition
 	for _, f := range []struct{ column, value string }{{"f.language", q.Language}, {"f.tool", q.Tool}, {"f.rule_id", q.Rule}, {"f.severity", q.Severity}} {
 		if f.value != "" {
 			where += " AND " + f.column + "=?"
@@ -270,12 +276,12 @@ func (s *Store) AuditFindings(ctx context.Context, workspace string, q AuditQuer
 		return p, err
 	}
 	defer tx.Rollback()
-	selected, err := selectedReports(ctx, tx, workspace, q.ReportIDs)
+	scope, err := resolveAuditScope(ctx, tx, workspace, q.ReportIDs)
 	if err != nil {
 		return p, err
 	}
-	p.Reports = reportReferences(selected)
-	p.LatestImportAt = selectedLatest(p.Reports)
+	p.AuditSelection = scope.AuditSelection
+	p.LatestImportAt = scope.latest
 	where, args, err := auditWhere(workspace, q)
 	if err != nil {
 		return p, err
@@ -302,43 +308,69 @@ func (s *Store) AuditFindings(ctx context.Context, workspace string, q AuditQuer
 		}
 		p.Items = append(p.Items, f)
 	}
+	if err = rows.Err(); err != nil {
+		return p, err
+	}
+	if err = rows.Close(); err != nil {
+		return p, err
+	}
+	p.Reports = reportReferences(scope.reports)
+	if q.ReportIDs == nil {
+		p.Reports, err = auditFindingReferences(ctx, tx, workspace, p.Items)
+		if err != nil {
+			return p, err
+		}
+		p.ReportsTruncated = p.ReportCount > len(p.Reports)
+	}
 	if q.Offset+len(p.Items) < p.Total {
 		p.NextOffset = q.Offset + len(p.Items)
 		p.HasMore = true
 	}
-	return p, rows.Err()
+	return p, nil
 }
 func (s *Store) AuditSummary(ctx context.Context, workspace string, ids []string) (AuditSummary, error) {
-	p := AuditSummary{Scanners: []string{}, ProvenanceIncompleteReportIDs: []string{}}
+	p := AuditSummary{Reports: []ReportReference{}, Scanners: []string{}, ProvenanceIncompleteReportIDs: []string{}}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return p, err
 	}
 	defer tx.Rollback()
-	selected, err := selectedReports(ctx, tx, workspace, ids)
+	scope, err := resolveAuditScope(ctx, tx, workspace, ids)
 	if err != nil {
 		return p, err
 	}
-	p.Reports = reportReferences(selected)
-	p.ReportCount = len(selected)
-	p.LatestImportAt = selectedLatest(p.Reports)
+	p.AuditSelection = scope.AuditSelection
 	scanners := map[string]bool{}
-	for _, r := range selected {
+	var latest time.Time
+	err = scope.eachReport(ctx, tx, workspace, func(r AuditReport) {
+		if len(p.Reports) < MaxAuditReports {
+			p.Reports = append(p.Reports, r.Report)
+		}
+		if imported, parseErr := time.Parse(time.RFC3339Nano, r.Report.UpdatedAt); parseErr == nil && imported.After(latest) {
+			latest = imported
+			p.LatestImportAt = r.Report.UpdatedAt
+		}
 		if r.ProvenanceIncomplete {
-			p.ProvenanceIncompleteReportIDs = append(p.ProvenanceIncompleteReportIDs, r.Report.ReportID)
+			p.ProvenanceIncompleteReportCount++
+			if len(p.ProvenanceIncompleteReportIDs) < MaxAuditReports {
+				p.ProvenanceIncompleteReportIDs = append(p.ProvenanceIncompleteReportIDs, r.Report.ReportID)
+			}
 		}
 		for _, run := range r.Runs {
-			scanners[run.Tool] = true
+			if includeAuditScanner(scanners, run.Tool) {
+				p.ScannersTruncated = true
+			}
 		}
+	})
+	if err != nil {
+		return p, err
 	}
+	p.ReportsTruncated = p.ReportCount > len(p.Reports)
+	p.ProvenanceIncompleteReportIDsTruncated = p.ProvenanceIncompleteReportCount > len(p.ProvenanceIncompleteReportIDs)
 	for scanner := range scanners {
 		p.Scanners = append(p.Scanners, scanner)
 	}
 	sort.Strings(p.Scanners)
-	if len(p.Scanners) > 100 {
-		p.Scanners = p.Scanners[:100]
-		p.ScannersTruncated = true
-	}
 	where, args, err := auditWhere(workspace, AuditQuery{ReportIDs: ids})
 	if err != nil {
 		return p, err
@@ -357,11 +389,19 @@ func (s *Store) AuditFilterValues(ctx context.Context, workspace string, ids []s
 		return p, err
 	}
 	defer tx.Rollback()
-	selected, err := selectedReports(ctx, tx, workspace, ids)
+	scope, err := resolveAuditScope(ctx, tx, workspace, ids)
 	if err != nil {
 		return p, err
 	}
-	p.Reports = reportReferences(selected)
+	p.AuditSelection = scope.AuditSelection
+	p.Reports = reportReferences(scope.reports)
+	if ids == nil {
+		p.Reports, err = auditScopeReferences(ctx, tx, workspace)
+		if err != nil {
+			return p, err
+		}
+		p.ReportsTruncated = p.ReportCount > len(p.Reports)
+	}
 	where, args, err := auditWhere(workspace, AuditQuery{ReportIDs: ids})
 	if err != nil {
 		return p, err

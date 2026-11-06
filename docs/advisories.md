@@ -1,6 +1,6 @@
 # Advisory view
 
-Requires Kandev **0.97.0** or later.
+Requires Kandev **0.99.0** or later.
 
 Open **Security → Advisories**, or visit `/security/advisories`. All findings
 remains the default Security page. The advisory page collects retained findings

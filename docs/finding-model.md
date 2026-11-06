@@ -1,6 +1,6 @@
 # Common finding model
 
-Requires Kandev **0.97.0** or later.
+Requires Kandev **0.99.0** or later.
 
 Finding normalization uses standard SARIF 2.1.0 fields across producers. The same
 model is available through `findings.get`, the native `get_finding` MCP tool,

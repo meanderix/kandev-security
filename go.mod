@@ -3,10 +3,10 @@ module kandev-security
 go 1.26.0
 
 require (
-	github.com/kandev/kandev v0.0.0-00010101000000-000000000000
+	github.com/kdlbs/kandev/pluginsdk v0.1.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/yuin/goldmark v1.7.13
-	google.golang.org/grpc v1.83.1
+	google.golang.org/grpc v1.83.2
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.58.0
 )
@@ -34,9 +34,5 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 )
 
-// The kandev SDK (pkg/pluginsdk) is not published as a standalone module
-// yet — this repo is developed against a local checkout of the kandev
-// monorepo. See README.md "Development" for the sibling-repo
-// layout this path assumes, and what changes once pkg/pluginsdk ships as its
-// own versioned module.
-replace github.com/kandev/kandev => ../kandev/apps/backend
+// Use the SDK contract pinned in .kandev-sdk-ref from the sibling checkout.
+replace github.com/kdlbs/kandev/pluginsdk => ../kandev/pluginsdk

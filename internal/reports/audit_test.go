@@ -22,7 +22,7 @@ func TestAuditSelectionsFiltersAndProvenance(t *testing.T) {
 	if err != nil || report.Report.SHA256 != a.Digest || len(report.ProvenanceGaps) != 1 || len(report.Runs) != 1 {
 		t.Fatalf("provenance: %+v %v", report, err)
 	}
-	for _, ids := range [][]string{nil, {}, []string{a.ID, a.ID}, []string{""}, []string{strings.Repeat("x", 129)}} {
+	for _, ids := range [][]string{{}, []string{a.ID, a.ID}, []string{""}, []string{strings.Repeat("x", 129)}} {
 		if _, err = s.AuditSummary(ctx, "ws", ids); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("accepted invalid selection: %v %v", ids, err)
 		}

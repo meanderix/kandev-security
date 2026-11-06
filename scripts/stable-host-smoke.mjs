@@ -9,8 +9,8 @@ import { chromium, devices } from "@playwright/test";
 
 const baseURL = process.env.KANDEV_URL ?? "http://127.0.0.1:18797";
 const taskPath = process.env.KANDEV_SMOKE_TASK_PATH;
-const expectedVersion = process.env.KANDEV_EXPECTED_VERSION ?? "v0.97.0";
-const expectedReleaseCommit = "e43881c7555372897b57ec51c705f1e05da43c40";
+const expectedVersion = process.env.KANDEV_EXPECTED_VERSION ?? "v0.99.0";
+const expectedReleaseCommit = "f0e2e774cfe2df8a0d15e4c21dea7b48580e38fb";
 const releaseSource = process.env.KANDEV_RELEASE_SOURCE;
 const hostLogPath = process.env.KANDEV_SMOKE_HOST_LOG;
 const screenshotDir = process.env.KANDEV_SMOKE_SCREENSHOTS ?? "/tmp/kandev-security-smoke";
@@ -22,7 +22,7 @@ if (!taskPath?.startsWith("/t/")) {
   throw new Error("Set KANDEV_SMOKE_TASK_PATH to a task route with a composer.");
 }
 if (!releaseSource) {
-  throw new Error("Set KANDEV_RELEASE_SOURCE to the detached Kandev v0.97.0 source checkout.");
+  throw new Error("Set KANDEV_RELEASE_SOURCE to the detached Kandev v0.99.0 source checkout.");
 }
 if (!hostLogPath) {
   throw new Error("Set KANDEV_SMOKE_HOST_LOG to the task-owned runtime backend log.");
@@ -32,7 +32,7 @@ const releaseRoot = resolve(releaseSource);
 const releaseCommit = execFileSync("git", ["-C", releaseRoot, "rev-parse", "HEAD"], {
   encoding: "utf8",
 }).trim();
-assert.equal(releaseCommit, expectedReleaseCommit, "release source is the exact v0.97.0 commit");
+assert.equal(releaseCommit, expectedReleaseCommit, "release source is the exact v0.99.0 commit");
 execFileSync("git", ["-C", releaseRoot, "diff", "--quiet"]);
 execFileSync("git", ["-C", releaseRoot, "diff", "--cached", "--quiet"]);
 const releaseWebDist = resolve(releaseRoot, "apps/web/dist");
@@ -118,7 +118,7 @@ async function verifyServedReleaseAssets() {
       const assetResponse = await fetch(`${baseURL}/${urlPath}`);
       assert.equal(assetResponse.status, 200, `host serves release asset ${relative}`);
       const servedBytes = Buffer.from(await assetResponse.arrayBuffer());
-      assert.deepEqual(servedBytes, sourceBytes, `served asset matches v0.97.0 build: ${relative}`);
+      assert.deepEqual(servedBytes, sourceBytes, `served asset matches v0.99.0 build: ${relative}`);
       fileDigests[index] = createHash("sha256").update(sourceBytes).digest("hex");
       totalBytes += sourceBytes.length;
     }
